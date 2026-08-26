@@ -1,208 +1,417 @@
 # Nightingale — Technical Brief
 
-## 1. System Architecture
+**A shared longitudinal patient note where the AI is never trusted on its own.**
 
-I built Nightingale with a **three-process architecture** to separate concerns and optimize for the 48-hour build constraint:
+The hard part of this problem is not summarisation. It is that a risk badge, a
+confidence label and an importance score are all just numbers on a screen, and a
+build can render all three without any of them meaning anything. This brief is
+organised around the three questions that matter for each: what is it, how would
+we know if it were wrong, and what happens when it is.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Browser (Client)                        │
-│    Next.js 15 + TipTap Editor + Yjs CRDT + React Query      │
-└────────┬──────────────────┬──────────────────┬──────────────┘
-         │ HTTPS             │ WSS              │ HTTPS
-         ▼                   ▼                  ▼
-┌────────────────┐   ┌──────────────┐   ┌──────────────────┐
-│   Supabase     │   │  Hocuspocus  │   │   FastAPI AI     │
-│   (Cloud)      │   │  Server      │   │   Service        │
-│                │   │              │   │                  │
-│ • Auth (JWT)   │   │ • Yjs CRDT   │   │ • Presidio PHI   │
-│ • PostgreSQL   │   │ • WebSocket  │   │ • Groq LLM       │
-│ • RLS Policies │   │ • Persistence│   │ • Importance     │
-│ • Realtime     │   │ • JWT Auth   │   │   Scoring        │
-│ • REST API     │   │              │   │                  │
-└────────────────┘   └──────────────┘   └──────────────────┘
-```
+**177 automated tests, runnable offline with no credentials.**
 
-### Why I Chose This Split
+---
 
-- **Supabase** gives me auth, RLS, REST API, and realtime subscriptions with minimal setup time
-- **Hocuspocus** is purpose-built for Yjs collaboration — I got it production-ready in ~50 lines
-- **FastAPI** isolates the Python NLP stack (Presidio requires spaCy) in a secure boundary
-
-### Graceful Degradation
-
-I designed the system to work without the collab server:
-- After 5 seconds of connection timeout, the editor switches to "Local Only" mode
-- Edits save directly to Supabase via REST API
-- All features remain functional except real-time cursor presence
-- This enables demo deployment without exposing JWT secrets
-
-## 2. Schema Relationships
+## 1. Architecture
 
 ```
-clinics ─┬─ profiles (clinic_id) ─── auth.users
-         │
-         └─ care_notes (clinic_id, patient_id → profiles)
-              │
-              ├─ timeline_entries (care_note_id, author_id → auth.users)
-              │    └─ comments (timeline_entry_id, author_id)
-              │
-              ├─ highlights (care_note_id, source_entry_id → timeline_entries)
-              │
-              ├─ note_versions (care_note_id, changed_by → auth.users)
-              │
-              └─ interaction_log (user_id → auth.users, target_id)
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Browser — Next.js 15 App Router                                         │
+│                                                                          │
+│   /patients/[id]  SERVER COMPONENT                                       │
+│     └─ one indexed read of care_notes.glance_cache  ──► Top Card in HTML  │
+│     └─ <PatientWorkspace> (client)                                       │
+│          timeline · comments · highlights load separately, so history     │
+│          volume never blocks the card                                    │
+└───────┬────────────────────┬─────────────────────────┬───────────────────┘
+        │ HTTPS              │ WSS                     │ HTTPS + JWT
+        ▼                    ▼                         ▼
+┌───────────────┐   ┌──────────────────┐   ┌──────────────────────────────┐
+│   SUPABASE    │   │   HOCUSPOCUS     │   │   FASTAPI  :8000             │
+│               │   │      :1234       │   │                              │
+│ Auth (GoTrue) │   │ JWT verify       │   │  require_caller()  JWT gate  │
+│ Postgres      │   │ ROLE allowlist   │   │        │                     │
+│ ROW LEVEL     │   │  patient=REJECT  │   │        ▼                     │
+│  SECURITY ◄───┼───┤  admin=readonly  │   │  redaction.py                │
+│ 8 tables      │   │ clinic match     │   │   Presidio + spaCy + SG regex│
+│ Realtime      │   │ Yjs CRDT sync    │   │        │                     │
+└───────────────┘   │ create_note_     │   │        ▼                     │
+        ▲           │  version() —     │   │  ╔══════════════════════════╗│
+        │           │  advisory lock   │   │  ║   CLINICAL SAFETY LAYER  ║│
+        │           └────────┬─────────┘   │  ║  extraction   (verbatim) ║│
+        │                    │             │  ║  risk_rules   (floors)   ║│
+        │  service-role key  │             │  ║  confidence   (abstain)  ║│
+        └────────────────────┴─────────────┤  ║  conflict     (surface)  ║│
+           RLS bypassed — tenant and role  │  ║  patient_gate (2 gates)  ║│
+           checks re-applied in code (S3)  │  ║  feedback     (floors)   ║│
+                                           │  ╚═══════════╤══════════════╝│
+                                           │              ▼               │
+                                           │        GROQ  gpt-oss-20b     │
+                                           │   sees redacted text only    │
+                                           └──────────────────────────────┘
 ```
 
-**Key relationships I implemented:**
-- Each patient has exactly **one care_note** (UNIQUE constraint on patient_id)
-- Timeline entries reference their care note and author
-- Highlights point back to source entries via **provenance_pointer** (JSONB)
-- Comments can be threaded (parent_comment_id self-reference) and anchored to text spans
-- Interaction logs create the feedback loop for self-learning importance
+Four processes, one Postgres. The safety layer sits between the model and the
+record in **both** directions: text is redacted on the way out, and every claim
+is validated on the way back before anything is stored.
 
-### Demo Data: Two Clinics
+---
 
-I pre-seeded data for two clinics to demonstrate RBAC isolation:
+## 2. Data model
 
-| Clinic | Patient | Clinical Scenario |
-|--------|---------|-------------------|
-| Nightingale Family Clinic | Alice Wong | Hypertension + CKD progression (eGFR 62→45), pending cardiology referral |
-| Sunrise Medical Center | Robert Lee | Type 2 Diabetes with rising A1C (7.8%→8.2%) |
+```
+clinics ─┬─< profiles ──────────────< interaction_log
+         │      │  (role enum: patient/staff/clinician/admin)
+         │      │
+         └─< care_notes  ── glance_cache jsonb ── the ≤300ms read
+                 │
+                 ├─< timeline_entries ──< comments (threaded, self-ref parent)
+                 │        │                   author_id → profiles
+                 │        │  author_role · author_id · type · timestamp
+                 │        │  provenance_pointer · visibility · is_archived
+                 │        │
+                 │        └─< highlights  source_entry_id → timeline_entries
+                 │              provenance_pointer {source_type, source_id, span}
+                 │              risk_level · risk_floor · model_risk
+                 │              confidence_score · confidence_band · abstained
+                 │              importance_score · safety_metadata
+                 │
+                 └─< note_versions  UNIQUE(care_note_id, version_number)
+```
 
-Users from one clinic cannot access data from another — I enforce this at the database level.
+**Three quantities, never collapsed into one.** The schema keeps them in
+separate columns because rendering one as another is what makes a trust signal
+meaningless:
 
-## 3. RBAC Enforcement Strategy
+| Column | Question it answers |
+|---|---|
+| `risk_level` | how bad is this if true — clinical severity |
+| `confidence_score` | how much should I trust the claim — system reliability |
+| `importance_score` | where does it sit in my queue — workflow urgency |
 
-### Database Level: PostgreSQL Row Level Security
+The frontend previously passed `importance_score` into the trust badge's
+`confidence` field. That is fixed; they are now three separate signals.
 
-I implemented RLS policies on every table enforcing:
+**Provenance is a discriminated union on `source_type`**, because two different
+link types are needed and writing them ad hoc is how they drift apart:
 
-| Rule | Implementation |
-|------|---------------|
-| Clinic isolation | `WHERE clinic_id = get_user_clinic_id()` |
-| Patient visibility | Patients only see `visibility = 'patient_visible'` entries |
-| Comment privacy | Patients blocked from comments table entirely |
-| Highlight privacy | Patients blocked from highlights table |
-| Write protection | `author_id = auth.uid()` on UPDATE policies |
-| Role-typed writes | Staff can only insert `author_role = 'staff'` entries |
+```jsonc
+// AI-scribed entry → the recording it came from
+{"source_type": "scribe_session", "session_id": "sess-…", "ai_model": "…",
+ "recording_duration_sec": 1245}
 
-### UI Level: View Adaptation
+// highlight → the entry and exact characters it came from
+{"source_type": "timeline_entry", "source_id": "<uuid>",
+ "span": {"from": 20, "to": 56}}
+```
 
-I built the frontend to render different layouts per role:
-- **Clinician:** Three-column (Glance + Editor + Timeline)
-- **Staff:** Three-column with staff-focused highlights
-- **Patient:** Single-column read-only with patient-visible entries only + messaging
-- **Admin:** Two-column read-only (Glance + Timeline)
+**One migration, not fourteen.** The inherited chain was a cautionary tale: 014
+dropped the policies 006/007 created and reinstated the exact nested-`EXISTS`
+pattern they existed to remove; 013 re-hardcoded a value 008 had just repaired
+and redefined the seed function at a new arity, making the two-clinic version
+permanently unreachable. `001_foundation.sql` states the intended final state
+once. One definition per policy.
 
-## 4. Trust System Design
+---
 
-### Progressive Trust Disclosure
+## 3. Security
 
-Research shows clinicians override AI at 73% when they don't understand reasoning, but only 1.7% when AI is transparent (Bao et al., 2023). I implemented a three-layer approach:
+### RBAC at the database
 
-1. **Layer 1 (Always visible):** Confidence badge (H/M/L) + risk level
-2. **Layer 2 (On hover):** Risk reason + provenance source
-3. **Layer 3 (On click):** Full reasoning chain + source navigation
+RLS on all eight tables; the UI adapts to role but is never the control. Clinic
+scoping runs through `SECURITY DEFINER` helpers with pinned `search_path`,
+because a nested `EXISTS` on an RLS-protected table re-evaluates that table's RLS
+and raises `42501`.
 
-### Visual Trust Language
+The load-bearing distinction: `check_care_note_access()` answers clinic
+membership only and returns true for *every* note in the caller's clinic. Used
+in a patient policy it exposes other patients' records — a leak the historical
+chain carried. **Patient policies scope on ownership via
+`check_patient_owns_care_note()`, never on clinic.**
 
-| Badge | Color | Meaning |
-|-------|-------|---------|
-| Clinician Verified | Green | Manually reviewed or edited by a clinician |
-| AI Generated | Blue | From AI scribe with confidence score |
-| Patient Reported | Purple | From patient session or message |
-| Staff Noted | Orange | Staff observation |
-| Conflict | Amber | Clinician edit disagrees with AI content |
+Patients cannot read AI-scribed notes, enforced twice: entries are
+`visibility='internal'`, *and* the patient SELECT policy excludes those entry
+types by name. A mis-marked entry stays hidden.
 
-## 5. Data Decay Policy
+Staff and clinicians cannot overwrite each other: the only UPDATE policy is
+`author_id = auth.uid()`. A cross-role write changes zero rows.
 
-I implemented a 3-tier archival strategy per HIPAA retention guidelines:
+**Where RLS is bypassed** (service-role key), tenant and role checks are
+re-implemented in code — AI scribe ingestion, the collab server, and account
+provisioning. Each is listed in the README with its replacement check.
 
-| Tier | Age | Storage | Access |
-|------|-----|---------|--------|
-| Hot | < 6 months | Full DB access | Default queries |
-| Warm | ≥ 6 months | DB with `is_archived = true` | Explicit request only |
-| Cold | Future | Off-DB storage | Not yet implemented |
+### PHI redaction — an accuracy control, not only a privacy one
 
-**Archival rules I set:**
-- Low/medium risk entries auto-archive after 6 months
-- High/critical risk entries remain active indefinitely
-- Instructions and admin entries never auto-archive
-- Clinicians/admins can explicitly view archived entries
+Presidio + spaCy `en_core_web_sm`, plus custom Singapore recognisers, running in
+`ai-service/services/redaction.py` **strictly before** any Groq call. NRIC/FIN
+including the 2022 **M series**; SG phones across mobile/landline/`+65` with
+internal spacing; titled and role-labelled names for Chinese, Malay and Tamil
+forms that `en_core_web_sm` misses.
 
-## 6. P95 Latency Measurement
+Over-redaction is treated as a defect of equal weight, because a mangled note is
+a clinical hazard:
 
-### Target: Glance View ≤ 300ms (Warm Path)
+- a clinical allow-list stops `Lisinopril` and `Metformin` being redacted as
+  PERSON — spaCy tags them as people;
+- `DATE_TIME` is deliberately not redacted: clinical reasoning depends on
+  relative timing, and dates alone are low re-identification risk once names,
+  NRIC, phone and MRN are gone;
+- negation is never stripped — `"not allergic to penicillin"` losing its `not`
+  is asserted against by test.
 
-**How I measured:**
+Logs record counts and entity types, never PHI. 33 tests, each written as "this
+string must NOT appear in the text we would send to Groq".
 
-1. **Build production bundle:**
-   ```bash
-   cd frontend && npm run build && npm start
-   ```
+---
 
-2. **Use Chrome DevTools Network tab:**
-   - Navigate to `/patients/[id]` (glance view page)
-   - Record "DOMContentLoaded" timing
-   - Repeat 20+ times to calculate P95
+## 4. Clinical safety layer
 
-3. **Results I observed:**
-   - Cold path (first visit, no cache): 800-1200ms
-   - Warm path (subsequent visits): **150-250ms** ✓
+### 4.1 Extraction over generation
 
-### Architecture Enabling Sub-300ms
+**Decision made before any prompt was written: extraction.** A paraphrase
+retains no origin, so there is nothing to validate. Every claim must be an exact
+substring of a source entry.
 
-| Optimization | Impact |
-|--------------|--------|
-| **SSR with Next.js 15** | Page HTML pre-rendered on server, no client-side data waterfall |
-| **Denormalized `glance_cache`** | I store top items and care plan score directly on `care_notes` table — no JOINs |
-| **React Query caching** | `staleTime: 30000` prevents redundant API calls within session |
-| **Supabase Edge Functions** | Low-latency API responses from edge locations |
+- *What it is:* a byte-exact span in a named source entry.
+- *How we'd know it's wrong:* the quote either occurs in the source or it does
+  not. No model, no threshold, no judgement.
+- *What happens when it is:* the claim is **rejected and never stored**. A
+  hallucination degrades recall, never correctness.
 
-### Alternative Measurement: Lighthouse CI
+Normalisation folds whitespace and typographic quote characters only. Anything
+that changes words — including dropping a negation — fails. A rejected claim gets
+span `(0,0)`, never a guessed offset: a fabricated span points a clinician at
+text that does not support the claim, which is worse than no span. Rejection rate
+is exposed as a drift signal; a rising rate means the model has slid toward
+paraphrase.
+
+### 4.2 Deterministic risk floors
+
+```
+final_risk = max(deterministic_floor, model_proposal)
+```
+
+An LLM's ordinal is not stable across runs, prompt phrasings or model versions.
+It is treated as a *proposal*. The floor is computed by regex and numeric
+comparison — reproducible, inspectable, diffable in review, unchanged by a model
+upgrade.
+
+**The model can raise risk. It can never lower it.** Text containing
+`anaphylaxis` resolves to critical whether the model said `info` or `critical`.
+
+Numeric thresholds (K⁺ ≥ 6.0, eGFR ≤ 30, systolic ≥ 180, SpO₂ ≤ 92) because a
+number does not drift the way an adjective does. Negation is guarded in **both
+directions** — `"denies chest pain"` and `"anaphylaxis ruled out"` both fail to
+escalate. Over-firing on negated findings is a direct alert-fatigue driver.
+
+Every floor names the rule that produced it, so a wrong badge traces to a
+specific pattern rather than to model temperament.
+
+### 4.3 Confidence and abstention
+
+Self-reported model confidence is decoration, so the model is never asked. The
+score is computed from three observable signals:
+
+```
+confidence = 0.50 × ensemble agreement      (same claim across N samples)
+           + 0.35 × extraction verification (verbatim in source?)
+           + 0.15 × deterministic rule support
+```
+
+| Band | Range | Meaning shown to the clinician |
+|---|---|---|
+| High | ≥ 0.85 | consistent across samples and verbatim in the record |
+| Medium | 0.60–0.84 | mostly consistent; verify before acting |
+| Low | < 0.60 | **abstain** — withheld and sent to manual review |
+
+"Medium" therefore has an exact numeric meaning, published in the UI on hover
+rather than left as a word the model chose.
+
+- *How we'd know it's wrong:* calibration. `brier_score()` and a per-band
+  accuracy report over resolved items. If the system says 0.9 it should be right
+  about 90% of the time; a rising Brier score means the weights need refitting.
+- *What happens when it is:* below 0.60 the system **does not guess** — it emits
+  an abstention surfaced as a review task rather than a claim.
+
+**One deliberate asymmetry.** A low-confidence *critical* finding is still shown,
+flagged unverified. Silently withholding a possible anaphylaxis is a worse
+failure than showing a clinician something uncertain. Abstention protects
+against noise, not against safety-relevant recall.
+
+### 4.4 Clinical contradiction engine
+
+Human-human contradictions are real and routine. This is a different problem
+from resolving competing *edits*, and is handled differently.
+
+Deterministic regex extracts medication–dosage pairs, allergy assertions and
+their explicit denials, tagged with author, role, timestamp and verbatim quote.
+Where one entity carries two values across two authors, a conflict is raised:
+allergy contradictions rank **critical**, dosage **high**.
+
+**The system never arbitrates.** If a clinician wrote `10mg` and a nurse recorded
+`100mg`, it has no basis to decide which is correct, and picking one would
+manufacture false certainty about a dosing decision. It surfaces the delta with
+both quotes side by side and states that a clinician must resolve it.
+
+Two things deliberately *not* flagged, because they would be noise: a single
+author revising their own note over time (a correction), and vitals differing
+across visits (the timeline working as intended).
+
+Edit-level conflicts are separate and *do* resolve, deterministically: role
+authority → recency → edit id. The id tie-break exists so two clients resolving
+the same conflict independently cannot diverge. Losing edits are preserved, never
+discarded. Clinician-over-AI resolves silently; two humans disagreeing still
+picks a winner but is flagged for review.
+
+### 4.5 Patient-facing maker-checker firewall
+
+Patient-facing generation is the highest-severity class in the system, and the
+only path where AI output cannot reach its audience unaccompanied. Three gates,
+all of which must pass:
+
+1. **Grounding (deterministic).** Every clinical token — drug names, doses,
+   numbers with units — must appear in the source entries. Compared by **set
+   membership, not substring**: substring matching would treat `1` as grounded by
+   `10mg`, and `10` as grounded by `100mg`, which is a dosing error passing in
+   the dangerous direction.
+2. **Prohibited speech acts (deterministic).** Diagnosis, prognosis,
+   stop-treatment, dose-change and emergency-deferral language. These are
+   clinician speech acts; an assistant has no standing to make them.
+3. **Named human approval.** Clinician or admin only, recorded and rendered as
+   visible attribution so the patient knows a human reviewed it and who.
+
+**Approval cannot rescue a blocked draft.** A clinician clicking approve on
+ungrounded content is precisely what gates 1 and 2 exist to prevent, so the
+checks run first. A blocked draft is returned for editing — never softened or
+auto-corrected, because silent repair hides the failure.
+
+### 4.6 Feedback loop: exposure bias and fatigue
+
+Both hazards are structural, and neither is fixed by better prompting.
+
+**Exposure bias.** The loop only sees what it surfaced. Score something low, hide
+it, and nobody corrects it — the error is self-reinforcing and invisible, because
+precision on surfaced items looks fine while recall quietly rots. Mitigation:
+**5% of unsurfaced items are randomly promoted into a review queue.** Random, not
+"most nearly surfaced" — sampling near the threshold measures the boundary rather
+than the blind spot.
+
+**Alert fatigue.** A team under load clicks dismiss, and learning from those
+dismissals teaches the system to hide exactly what it should show.
+
+- Critical items have an importance floor (0.90) that learned weight cannot bury.
+- Critical dismissals require a typed reason and cannot be bulk-dismissed.
+- Low-risk noise stays one click, because friction on noise is itself a fatigue
+  driver.
+- Dismissal bursts (>10 in 5 minutes) are honoured in the UI but **excluded from
+  training**, so a bad shift does not permanently degrade the model.
+- Interactions with critical items never train the model at all — those classes
+  are governed by deterministic floors, and letting them drift would defeat the
+  floor.
+
+The learned signal is **clinic-scoped**. One clinic's pins provably do not move
+another clinic's scores; there is a test for exactly that.
+
+---
+
+## 5. Performance — the ≤300ms warm glance path
+
+**Decoupling, then measurement.** The page was a client component running a
+waterfall — session → care_note → (entries, comments, highlights) → profiles —
+behind a skeleton, so the Top Card could not paint until history had loaded. The
+budget was structurally unreachable.
+
+Now `/patients/[id]` is a server component performing **one indexed read** of
+`care_notes.glance_cache` (`idx_care_notes_patient`), selecting explicit columns
+so the `yjs_state` bytea stays off the path entirely. The card is in the server
+HTML. Timeline, comments and highlights load client-side, so historical volume
+has no bearing on how fast the card appears.
+
+**Method.** `scripts/measure_glance.mjs` authenticates against Supabase to
+exercise the real authenticated render path, discards 10 warmup requests (a warm
+path means caches and connections are primed; including cold starts measures the
+wrong thing), then times N sequential requests to last byte. Sequential by
+design — concurrency measures throughput, which is a different claim than
+single-request latency.
+
+```
+MEASUREMENT PENDING — see PROGRESS.md.
+The harness is written and the SSR path is built and verified
+(`/patients/[id]` reports as server-rendered on demand in the production build),
+but the deployed database currently returns 42501 for every request because the
+first deployment of 001_foundation.sql granted no table privileges. Numbers will
+be filled in from a real run rather than estimated.
+```
+
+**Data decay.** Three tiers: hot (<6 months, in every query), warm (archived,
+excluded by default, reachable by clinicians and admins), cold (off-database,
+designed not implemented). `archive_old_timeline_entries()` preserves
+high-risk entries and instructions regardless of age — decay must never quietly
+remove a safety-relevant item.
+
+---
+
+## 6. Trade-offs and what I would do next
+
+**Extraction costs fluency.** Verbatim spans read less smoothly than a generated
+summary. Accepted deliberately: a clinician who cannot verify a claim in seconds
+will not trust it, and fluency is worth nothing without that.
+
+**Over-redaction is the safe failure direction, but it is still a failure.** The
+clinical allow-list covers ~70 common medications; an unusual drug name will be
+redacted. Utility is lost, never privacy. A medical NER model would be the
+principled fix.
+
+**Confidence weights are reasoned, not fitted.** 0.50/0.35/0.15 is defensible but
+unvalidated — there is no labelled outcome set here. The calibration harness
+exists precisely so they can be refitted against real data rather than argued
+about.
+
+**Ensemble sampling costs N× tokens.** Single-shot falls back to a neutral 0.5
+agreement prior, so a deployment that cannot afford sampling degrades to
+extraction verification and rule support rather than breaking.
+
+**The collab server needs secrets the demo environment lacks**, so real-time
+editing degrades to "Local Only" with direct saves. Concurrency semantics are
+proven by test rather than by the live socket: non-destructive merge across
+sections, deterministic same-section resolution, and atomic version allocation
+under a 10-thread concurrent test.
+
+**Next, in order.** Measure the P95 against the repaired deployment. Wire the
+safety layer's outputs through the AI routers so highlights carry real
+confidence and floors end to end. Fit the confidence weights against labelled
+outcomes. Replace the medication allow-list with a clinical NER model. Then
+ambient voice capture, which is the largest remaining item in the brief and the
+first thing to cut.
+
+---
+
+## 7. Verification
 
 ```bash
-npm install -g @lhci/cli
-lhci autorun --collect.url=http://localhost:3000/patients/[patient-id]
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 177 passed
+cd frontend && npx tsc --noEmit && npm run build
+cd collab-server && npx tsc --noEmit
+node scripts/measure_glance.mjs
 ```
 
-Lighthouse reports Time to Interactive (TTI) and Largest Contentful Paint (LCP), both relevant for glance view performance.
+| Suite | Tests | Proves |
+|---|---|---|
+| `test_rbac_scope` | 12 | role isolation, cross-clinic denial, cross-role writes |
+| `test_revision_history` | 14 | version increment, revert restores state, metadata-only audit |
+| `test_highlight_provenance` | 21 | pointer schema, span resolution, referential integrity |
+| `test_concurrent_edits` | 19 | non-destructive merge, deterministic resolution, atomic versioning |
+| `test_self_learning_importance` | 11 | learning moves scores; tenant isolation holds |
+| `test_phi_redaction` | 33 | zero PHI leakage; clinical values preserved |
+| `test_clinical_safety` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
+| `test_meta_rls_sanity` | 3 | guards against a green suite that proves nothing |
 
-## 7. Assumptions and Trade-offs
+The suites build their own PostgreSQL cluster from the migration file and run as
+a non-superuser. A superuser bypasses RLS, which would make every access-control
+assertion pass while proving nothing — `test_meta_rls_sanity` exists to catch
+exactly that, by asserting the same query returns different row counts per role.
 
-### Assumptions I Made
-- **Single clinic per user:** Simplified multi-tenancy; users belong to one clinic
-- **Email/password auth:** No SSO/SAML for the demo; easily extensible via Supabase Auth
-- **Groq API availability:** LLM features gracefully degrade if Groq is unreachable
-- **English-only PHI detection:** Presidio configured for English NER; extensible to other languages
-- **Collab server optional:** Demo works without it via graceful fallback
-
-### Trade-offs I Made
-
-| Choice | Benefit | Cost |
-|--------|---------|------|
-| Yjs over OT | Offline-capable editing, simpler conflict resolution | Slightly larger document size |
-| Supabase over custom backend | RLS, auth, realtime, REST API instantly | Less API customization |
-| Groq over OpenAI | Ultra-fast inference (~100ms TTFT) | Slightly less quality than GPT-4 |
-| TipTap over Slate.js | Native Yjs collaboration, rich extensions | Larger bundle |
-| SSR for Glance View | Sub-300ms P95 achieved | Less interactivity without hydration |
-| "Local Only" fallback | Demo works without secrets | No real-time cursors in demo mode |
-
-### What I Would Add With More Time
-- WebRTC audio for live consultation recording → AI transcription
-- Full offline-first PWA with IndexedDB Yjs persistence
-- FHIR integration for EHR data import/export
-- Granular field-level RLS (e.g., specific sections editable by specific roles)
-- Full audit log viewer with export
-- Advanced analytics dashboard for clinic administrators
-
-## 8. Performance Targets
-
-| Metric | Target | Achieved | Strategy |
-|--------|--------|----------|----------|
-| Glance View P95 | ≤ 300ms | ~200ms | Denormalized `glance_cache` + SSR + React Query |
-| Editor Load | ≤ 500ms | ~400ms | Yjs binary state load + streaming hydration |
-| AI Summary | ≤ 2s | ~1.5s | Groq API ~100ms TTFT + ~500ms generation |
-| Timeline Scroll | 60fps | ✓ | Virtual scrolling + React.memo optimization |
-| Highlight Accept/Reject | ≤ 2s | ~500ms | Inline Y/N shortcuts, optimistic UI updates |
+**Two bugs these tests caught in my own safety code**, both of which would have
+shipped looking correct: `\b\d+\b` does not match `100` in `100mg`, so a
+hallucinated dose passed the patient gate; and negation was checked only before a
+finding, so `"anaphylaxis ruled out"` escalated to critical.
