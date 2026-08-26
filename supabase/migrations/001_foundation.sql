@@ -512,6 +512,54 @@ instruction/admin types. Returns the count archived. Schedule via pg_cron:
                        $$SELECT archive_old_timeline_entries()$$);';
 
 -- =============================================================================
+-- 6b. Atomic version creation
+-- =============================================================================
+-- note_versions carries UNIQUE(care_note_id, version_number). The collab server
+-- previously read MAX(version_number), added one, and inserted -- a read-then-write
+-- that collides whenever two flushes land together, which under the 3s
+-- collaborative debounce is the normal case rather than an edge case
+-- (guardrails.md D2).
+--
+-- The advisory lock serialises version creation per care note, so the number is
+-- allocated and consumed inside one transaction. It is taken on the care note
+-- id, so unrelated notes never block each other.
+
+CREATE OR REPLACE FUNCTION create_note_version(
+  p_care_note_id     uuid,
+  p_changed_by       uuid          DEFAULT NULL,
+  p_content_snapshot jsonb         DEFAULT NULL,
+  p_change_summary   text          DEFAULT 'Auto-saved version',
+  p_yjs_snapshot     bytea         DEFAULT NULL
+) RETURNS integer AS $$
+DECLARE
+  v_version integer;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext(p_care_note_id::text));
+
+  SELECT COALESCE(MAX(version_number), 0) + 1
+    INTO v_version
+    FROM public.note_versions
+   WHERE care_note_id = p_care_note_id;
+
+  INSERT INTO public.note_versions (
+    care_note_id, version_number, yjs_snapshot,
+    content_snapshot, changed_by, change_summary
+  ) VALUES (
+    p_care_note_id, v_version, p_yjs_snapshot,
+    p_content_snapshot, p_changed_by, p_change_summary
+  );
+
+  RETURN v_version;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+COMMENT ON FUNCTION create_note_version(uuid, uuid, jsonb, text, bytea) IS
+'Allocates the next version_number and inserts the snapshot atomically.
+Takes a per-care-note advisory lock so concurrent flushes cannot collide on
+UNIQUE(care_note_id, version_number). changed_by may be NULL for system-authored
+snapshots -- it is a uuid FK and must never receive a sentinel string.';
+
+-- =============================================================================
 -- 7. Clinics
 -- =============================================================================
 

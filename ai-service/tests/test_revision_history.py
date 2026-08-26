@@ -181,3 +181,159 @@ class TestRevisionHistory:
             assert version["changed_by"] is not None, "Audit trail: changed_by required"
             assert version["change_summary"] is not None, "Audit trail: change_summary required"
             assert version["created_at"] is not None, "Audit trail: created_at required"
+
+
+# ===========================================================================
+# Audit trail: who changed what, metadata only
+# ===========================================================================
+# The brief requires the audit log to show "who changed what (metadata only)".
+# The second half is the security-relevant half: an audit trail that quotes
+# clinical text becomes a second, less-protected copy of the record. These tests
+# assert attribution is present AND that patient content is not.
+
+from tests.support.pgharness import USERS  # noqa: E402
+
+# Clinical strings that appear in the seeded notes. None may leak into the log.
+SEEDED_PHI = [
+    "Alice Wong",
+    "Lisinopril",
+    "eGFR dropped to 45",
+    "dyspnea on exertion",
+    "Potassium 5.1",
+]
+
+
+class TestAuditTrailIsMetadataOnly:
+    async def test_interaction_log_attributes_every_action(
+        self, clinician_client, sample_highlights
+    ):
+        """Every logged action names an actor, their role, and the target."""
+        highlight_id = sample_highlights[0]["id"]
+        clinician_client.table("interaction_log").insert({
+            "user_id": USERS["clinician"][0],
+            "user_role": "clinician",
+            "action_type": "pin",
+            "target_type": "highlight",
+            "target_id": highlight_id,
+            "target_metadata": {"keywords": ["renal"], "topic": "renal_function"},
+        }).execute()
+
+        rows = clinician_client.table("interaction_log").select("*").execute().data
+        assert rows, "no audit rows recorded"
+        for row in rows:
+            assert row["user_id"], "audit row without an actor"
+            assert row["user_role"], "audit row without a role"
+            assert row["action_type"], "audit row without an action"
+            assert row["target_id"], "audit row without a target"
+
+    async def test_interaction_log_contains_no_clinical_content(self, service_client):
+        """
+        Read the whole log with RLS bypassed — the strongest form of the check,
+        since it sees every row rather than one role's slice.
+        """
+        rows = service_client.table("interaction_log").select("*").execute().data
+        blob = str(rows)
+        for secret in SEEDED_PHI:
+            assert secret not in blob, (
+                f"Audit log leaked clinical content: {secret!r} found in interaction_log"
+            )
+
+    async def test_audit_metadata_is_topics_not_transcripts(self, service_client):
+        """target_metadata carries keywords and topics, never note text."""
+        rows = service_client.table("interaction_log").select("target_metadata").execute().data
+        for row in rows:
+            meta = row.get("target_metadata") or {}
+            assert set(meta).issubset({"keywords", "topic", "action", "count", "archived_at"}), (
+                f"Unexpected audit metadata keys: {sorted(meta)}"
+            )
+            for value in meta.get("keywords", []):
+                assert len(str(value)) < 40, f"Keyword looks like free text: {value!r}"
+
+    async def test_versions_record_who_changed_what(self, clinician_client, sample_care_note_id):
+        """note_versions attributes each snapshot and describes the change."""
+        versions = (
+            clinician_client.table("note_versions")
+            .select("*")
+            .eq("care_note_id", sample_care_note_id)
+            .order("version_number", desc=False)
+            .execute()
+            .data
+        )
+        assert versions, "no versions seeded"
+        for v in versions:
+            assert v["changed_by"], f"version {v['version_number']} has no author"
+            assert v["change_summary"], f"version {v['version_number']} has no summary"
+
+
+class TestRevertRestoresState:
+    async def test_revert_restores_prior_content_and_adds_a_version(
+        self, clinician_client, sample_care_note_id
+    ):
+        """
+        Revert is additive, not destructive: restoring v1 writes a NEW version
+        carrying v1's content, so the history of what happened stays intact and
+        the revert itself is auditable.
+        """
+        versions = (
+            clinician_client.table("note_versions")
+            .select("*")
+            .eq("care_note_id", sample_care_note_id)
+            .order("version_number", desc=False)
+            .execute()
+            .data
+        )
+        original = versions[0]
+        latest = versions[-1]
+        assert original["content_snapshot"] != latest["content_snapshot"], (
+            "seed fixture needs versions with differing content for this test"
+        )
+
+        clinician_client.table("note_versions").insert({
+            "care_note_id": sample_care_note_id,
+            "version_number": latest["version_number"] + 1,
+            "content_snapshot": original["content_snapshot"],
+            "changed_by": USERS["clinician"][0],
+            "change_summary": f"Reverted to version {original['version_number']}",
+        }).execute()
+
+        after = (
+            clinician_client.table("note_versions")
+            .select("*")
+            .eq("care_note_id", sample_care_note_id)
+            .order("version_number", desc=True)
+            .execute()
+            .data
+        )
+        assert len(after) == len(versions) + 1, "revert did not create a new version"
+        assert after[0]["content_snapshot"] == original["content_snapshot"], (
+            "reverted version does not carry the prior state"
+        )
+        # Nothing was destroyed.
+        assert any(v["version_number"] == latest["version_number"] for v in after)
+
+    async def test_version_numbers_are_unique_per_care_note(
+        self, clinician_client, sample_care_note_id
+    ):
+        """
+        UNIQUE(care_note_id, version_number) is what stops a concurrent flush
+        silently clobbering a snapshot.
+        """
+        from postgrest.exceptions import APIError
+
+        existing = (
+            clinician_client.table("note_versions")
+            .select("version_number")
+            .eq("care_note_id", sample_care_note_id)
+            .order("version_number", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        )
+        with pytest.raises(APIError):
+            clinician_client.table("note_versions").insert({
+                "care_note_id": sample_care_note_id,
+                "version_number": existing[0]["version_number"],  # duplicate
+                "content_snapshot": {"summary": "duplicate"},
+                "changed_by": USERS["clinician"][0],
+                "change_summary": "should be rejected",
+            }).execute()

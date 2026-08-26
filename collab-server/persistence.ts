@@ -208,62 +208,47 @@ export async function saveYjsState(
 // ----------------------------------------------------------------
 
 /**
- * Insert a new `note_versions` row as a point-in-time snapshot.
+ * Insert a point-in-time snapshot into `note_versions`.
  *
- * The `version_number` is determined by counting existing versions + 1.
- * A `content_snapshot` (JSON representation of the Yjs document) can be
- * supplied for human-readable diffs; pass `null` if unavailable.
+ * Delegates numbering to the create_note_version() SQL function, which takes a
+ * per-care-note advisory lock and allocates the version inside one transaction.
+ * This code used to read MAX(version_number), add one, and insert -- a
+ * read-then-write that collides whenever two flushes land together. Under the
+ * 3s collaborative debounce that is the normal case, and the failure was caught
+ * and logged rather than thrown, so version snapshots simply stopped appearing.
+ *
+ * `changedBy` is nullable on purpose. It is a uuid foreign key, so a
+ * system-authored snapshot passes null -- never a sentinel string like
+ * "system", which fails the type parse and loses the snapshot.
  */
 export async function createNoteVersion(
   careNoteId: string,
   yjsSnapshot: Uint8Array,
-  changedBy: string,
+  changedBy: string | null,
   contentSnapshot: Record<string, unknown> | null = null,
   changeSummary: string = "Auto-saved version"
-): Promise<void> {
+): Promise<number> {
   const supabase = getSupabaseAdmin();
 
-  // Determine next version number
-  const { data: latestVersion, error: versionError } = await supabase
-    .from("note_versions")
-    .select("version_number")
-    .eq("care_note_id", careNoteId)
-    .order("version_number", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data, error } = await supabase.rpc("create_note_version", {
+    p_care_note_id: careNoteId,
+    p_changed_by: changedBy,
+    p_content_snapshot: contentSnapshot,
+    p_change_summary: changeSummary,
+    p_yjs_snapshot: Buffer.from(yjsSnapshot).toString("base64"),
+  });
 
-  if (versionError) {
+  if (error) {
     console.error(
-      `[persistence] Failed to query latest version for ${careNoteId}:`,
-      versionError.message
+      `[persistence] Failed to create version for ${careNoteId}:`,
+      error.message
     );
-    throw versionError;
+    throw error;
   }
 
-  const nextVersion = latestVersion ? latestVersion.version_number + 1 : 1;
-
-  const base64Snapshot = Buffer.from(yjsSnapshot).toString("base64");
-
-  const { error: insertError } = await supabase
-    .from("note_versions")
-    .insert({
-      care_note_id: careNoteId,
-      version_number: nextVersion,
-      yjs_snapshot: base64Snapshot,
-      content_snapshot: contentSnapshot,
-      changed_by: changedBy,
-      change_summary: changeSummary,
-    });
-
-  if (insertError) {
-    console.error(
-      `[persistence] Failed to create version ${nextVersion} for ${careNoteId}:`,
-      insertError.message
-    );
-    throw insertError;
-  }
-
+  const version = typeof data === "number" ? data : Number(data);
   console.log(
-    `[persistence] Created version ${nextVersion} for ${careNoteId} by ${changedBy}`
+    `[persistence] Created version ${version} for ${careNoteId} by ${changedBy ?? "system"}`
   );
+  return version;
 }

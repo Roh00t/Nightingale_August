@@ -162,8 +162,10 @@ const server = new Hocuspocus({
       // Extract the user who last changed from context.
       // onStoreDocument's context is a map of all connected users'
       // contexts; we pick the first available user as the "changed_by".
+      // null, not "system": changed_by is a uuid FK and a sentinel string
+      // fails the type parse, silently dropping the snapshot.
       const connContext = resolveChangedByUser(context);
-      const changedByUserId = connContext?.user.id ?? "system";
+      const changedByUserId = connContext?.user.id ?? null;
 
       // Build a lightweight JSON content snapshot from the Y.Doc
       // so humans can browse version diffs without decoding Yjs binary.
