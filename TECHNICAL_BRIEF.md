@@ -140,6 +140,26 @@ Staff and clinicians cannot overwrite each other: the only UPDATE policy is
 re-implemented in code — AI scribe ingestion, the collab server, and account
 provisioning. Each is listed in the README with its replacement check.
 
+### Transport and storage
+
+TLS in transit and encryption at rest are both provided by the platform rather
+than implemented here, and it is worth being explicit about which is which:
+
+| Layer | Control | Provided by |
+|---|---|---|
+| Browser ↔ Supabase | TLS 1.2+, HTTPS enforced, HSTS | Supabase (managed) |
+| Browser ↔ AI service | TLS terminated at the platform edge in deployment; plain HTTP on localhost only | Railway / reverse proxy |
+| Browser ↔ collab server | WSS in deployment; `ws://` on localhost only | platform |
+| Data at rest | AES-256 on the Postgres volume and in backups | Supabase (managed) |
+| Secrets | `.env` is gitignored; the service-role key and JWT signing key are never sent to the browser | this repo |
+
+Two things this repo does own. The `SUPABASE_SERVICE_ROLE_KEY` appears only in
+server-side code — never behind a `NEXT_PUBLIC_` prefix, so it cannot reach a
+client bundle. And redaction maps, which hold the reverse mapping from
+placeholder back to real PHI, are held in a bounded in-process store with a TTL
+and are never serialisable into a response; the `/api/ai/redact` response model
+exposes counts only, asserted by test.
+
 ### PHI redaction — an accuracy control, not only a privacy one
 
 Presidio + spaCy `en_core_web_sm`, plus custom Singapore recognisers, running in

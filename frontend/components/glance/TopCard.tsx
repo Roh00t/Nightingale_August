@@ -48,6 +48,12 @@ interface TopCardProps {
   onReviewConflicts?: () => void;
   /** Raises the chip to critical styling when an allergy conflict is present. */
   hasCriticalConflict?: boolean;
+  /** Assign an open action to a colleague. */
+  onAssignAction?: (highlightId: string) => void;
+  /** Mark an open action complete. */
+  onCompleteAction?: (highlightId: string) => void;
+  /** Defer an action. Critical items require a typed reason. */
+  onDeferAction?: (highlightId: string) => void;
 }
 
 const changeIcons: Record<string, React.ElementType> = {
@@ -79,6 +85,9 @@ export function TopCard({
   conflictCount = 0,
   onReviewConflicts,
   hasCriticalConflict = false,
+  onAssignAction,
+  onCompleteAction,
+  onDeferAction,
 }: TopCardProps) {
   const topHighlights = [...highlights]
     .filter((h) => h.is_accepted !== false)
@@ -142,6 +151,22 @@ export function TopCard({
         </CardHeader>
 
         <CardContent className="space-y-3 px-3 sm:px-6">
+      {/* Critical flags and open actions, above the highlight list: the brief
+          asks for both to be readable at a glance, and an unresolved action
+          outranks an observation. */}
+      <CriticalFlags highlights={highlights} onFlagClick={onHighlightClick} />
+
+      {onAssignAction && onCompleteAction && onDeferAction && (
+        <div className="mb-3">
+          <ActionItems
+            highlights={highlights}
+            onAssign={onAssignAction}
+            onDone={onCompleteAction}
+            onDefer={onDeferAction}
+          />
+        </div>
+      )}
+
       {/* Unresolved contradictions rank above individual highlights: a
           disagreement about a dose is more urgent than any single observation. */}
       {conflictCount > 0 && (

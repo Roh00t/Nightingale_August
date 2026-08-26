@@ -296,6 +296,101 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     setTimeout(() => setHighlightedEntryId(null), 6000);
   }, [conflicts, setHighlightedEntryId, setHighlightedSpan]);
 
+
+  /**
+   * Open-action handlers.
+   *
+   * Deferring a critical or high finding requires a typed reason and cannot be
+   * done in one click. That friction is deliberate and mirrors
+   * `services/safety/feedback.py`: a care team under load will otherwise clear
+   * alerts on autopilot, and the loop would then learn to hide exactly the
+   * class of finding that matters most. Low-risk items stay one click, because
+   * friction on noise is itself a fatigue driver.
+   */
+  const logInteraction = useCallback(
+    async (action: string, highlightId: string, metadata: Record<string, unknown> = {}) => {
+      if (!currentUser) return;
+      await supabase.from('interaction_log').insert({
+        user_id: currentUser.id,
+        user_role: currentUser.role,
+        action_type: action,
+        target_type: 'highlight',
+        target_id: highlightId,
+        // Metadata only — never the clinical snippet.
+        target_metadata: metadata,
+      });
+    },
+    [supabase, currentUser],
+  );
+
+  const handleAssignAction = useCallback(async (highlightId: string) => {
+    const highlight = highlights.find((h) => h.id === highlightId);
+    if (!highlight || !careNote || !currentUser) return;
+
+    const assignable = clinicMembers.filter(
+      (m) => m.role === 'staff' || m.role === 'clinician',
+    );
+    if (assignable.length === 0) {
+      toast.error('No colleagues available to assign in this clinic');
+      return;
+    }
+
+    const assignee = assignable[0];
+    const { error } = await supabase.from('comments').insert({
+      care_note_id: careNote.id,
+      timeline_entry_id: highlight.source_entry_id,
+      author_id: currentUser.id,
+      author_role: currentUser.role,
+      content: `@${assignee.display_name} assigned: ${highlight.content_snippet}`,
+      mentions: [assignee.id],
+    });
+
+    if (error) {
+      toast.error('Could not assign this action');
+      return;
+    }
+    await logInteraction('comment', highlightId, { topic: 'assignment' });
+    toast.success(`Assigned to ${assignee.display_name}`);
+  }, [highlights, careNote, currentUser, clinicMembers, supabase, logInteraction]);
+
+  const handleCompleteAction = useCallback(async (highlightId: string) => {
+    await supabase.from('highlights').update({ is_accepted: true }).eq('id', highlightId);
+    setHighlights((prev) =>
+      prev.map((h) => (h.id === highlightId ? { ...h, is_accepted: true } : h)),
+    );
+    await logInteraction('accept', highlightId, { topic: 'action_completed' });
+    toast.success('Action marked complete');
+  }, [supabase, logInteraction]);
+
+  const handleDeferAction = useCallback(async (highlightId: string) => {
+    const highlight = highlights.find((h) => h.id === highlightId);
+    if (!highlight) return;
+
+    const needsReason =
+      highlight.risk_level === 'critical' || highlight.risk_level === 'high';
+
+    let reason = '';
+    if (needsReason) {
+      reason = (window.prompt(
+        `Deferring a ${highlight.risk_level} finding requires a reason.\n\n` +
+        'Why is this safe to defer?',
+      ) ?? '').trim();
+
+      // Same minimum the backend policy enforces, so the UI cannot be the
+      // weaker of the two checks.
+      if (reason.length < 8) {
+        toast.error('A specific reason (at least 8 characters) is required to defer this');
+        return;
+      }
+    }
+
+    await logInteraction('dismiss', highlightId, {
+      topic: 'action_deferred',
+      ...(reason ? { reason } : {}),
+    });
+    toast.info(needsReason ? 'Deferred with reason recorded' : 'Action deferred');
+  }, [highlights, logInteraction]);
+
   const handleHighlightClick = useCallback((highlightId: string, sourceEntryId: string | null) => {
     if (!sourceEntryId) return;
 
@@ -1238,6 +1333,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             conflictCount={conflictCount}
             hasCriticalConflict={conflicts.some((c) => c.severity === 'critical')}
             onReviewConflicts={handleReviewConflicts}
+            onAssignAction={handleAssignAction}
+            onCompleteAction={handleCompleteAction}
+            onDeferAction={handleDeferAction}
           />
         </div>
 

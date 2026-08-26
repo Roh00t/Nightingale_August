@@ -49,9 +49,9 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Per-entry metadata: `author_role`, `author_id`, `timestamp`, `type`, `provenance_pointer`
 - [x] Threaded comments with resolve/unresolve
 - [x] `@mentions`
-- [x] Assignments — `ActionItems.tsx` exposes Assign/Done/Defer
-- [x] Revision history: revert verified additive & auditable; version numbering now atomic
-- [ ] "View changes since X"
+- [x] Assignments — `ActionItems` now **rendered** in TopCard with working Assign/Done/Defer; deferring a critical/high finding requires a typed reason
+- [x] Revision history: revert now records its version via `create_note_version` (the direct insert omitted the NOT NULL `version_number` and failed silently)
+- [x] "View changes since X" — version-to-version compare in `VersionHistoryModal` + `SaveConfirmDialog`
 
 ### 2. AI Scribe & Prioritisation
 - [x] Three interaction types (`ai_doctor_consult_summary`, `ai_nurse_consult_summary`, `ai_patient_session_summary`)
@@ -81,7 +81,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Logs record counts/types, never PHI
 - [x] All 5 AI endpoints require verified JWT; fail closed
 - [x] Synthetic data only
-- [x] TLS/at-rest — documented (Supabase-managed)
+- [x] TLS/at-rest — documented in the technical brief with a per-layer table
 
 ### 6. Micro-tests — **113 passing, 0 failing, no credentials required**
 - [x] `test_rbac_scope` — 12, executing against real RLS
@@ -252,3 +252,32 @@ services passed the whole set where a single key was expected. Both now select
 by the token's `kid`, reject an unmatched `kid` rather than guessing, and return
 **401** for a malformed token instead of 500/503 — a bad credential is a client
 error, not a service outage.
+
+---
+
+## Verification pass — 27 Aug 2026
+
+Re-checked every item previously marked partial. Three had been over-claimed.
+
+| Item | Claimed | Actual |
+|---|---|---|
+| Glance <10s + P95 ≤300ms | unmet | **P95 79.7 ms measured** (n=100). The <10s readability claim is a UX judgement, not a measured one — say so in the demo. |
+| Assignments | "YES" (grep) | **Was dead code.** `ActionItems` was imported by `TopCard` and never rendered. Now rendered and wired. |
+| Revision history revert | "verified" | **Was broken.** The version insert omitted `version_number` (NOT NULL, no default) so every revert failed `23502`, and the error was never checked — content reverted, audit trail silently gapped. Now uses the atomic RPC and surfaces failure. |
+| "View changes since X" | not started | **Already existed** — version-to-version compare in `VersionHistoryModal`, plus `SaveConfirmDialog`. |
+| Self-learning | partial | Closed: clinic-scoped, 11 tests drive the real scorer. |
+| Data decay | undocumented | Closed: 3-tier design documented in the brief. |
+| Conflict resolution | partial | Clinical contradictions: closed (server-side endpoint + UI). **Edit-precedence (`services/conflict.py`) remains a tested reference that nothing calls** — see below. |
+| TLS/at-rest | not documented | Now documented per layer, including which controls this repo owns. |
+
+### Known: `services/conflict.py` is not wired
+
+The deterministic edit-precedence engine (role authority → recency → id) is
+built and has 10 passing tests, but no caller. It resolves *same-section
+concurrent edits*, which only arise on the Yjs/Hocuspocus path — and that path
+runs in TypeScript, not Python, and degrades to "Local Only" without collab
+secrets. So it is a correct, tested reference implementation for a code path
+that is not currently live. Stated plainly rather than presented as shipped.
+
+Clinical contradictions between authors are a different concern and **are**
+live, at `POST /api/ai/conflicts`.

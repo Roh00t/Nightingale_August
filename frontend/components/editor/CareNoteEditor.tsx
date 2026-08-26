@@ -554,13 +554,29 @@ export function CareNoteEditor({
 
       if (saveError) throw saveError;
 
-      // Create a new version entry for the revert
-      await supabase.from('note_versions').insert({
-        care_note_id: careNoteId,
-        content_snapshot: { summary: content },
-        changed_by: currentUser.id,
-        change_summary: `Reverted to version ${versionId}`,
+      // Record the revert as a NEW version.
+      //
+      // This used to be a direct insert that omitted version_number — a NOT NULL
+      // column with no default — so every revert failed with 23502 and, because
+      // the error was never checked, failed silently: the content reverted but
+      // no version was recorded, leaving a gap in the audit trail exactly where
+      // one matters most.
+      //
+      // create_note_version() allocates the number under a per-care-note
+      // advisory lock, so this is also safe against a concurrent flush.
+      const { error: versionError } = await supabase.rpc('create_note_version', {
+        p_care_note_id: careNoteId,
+        p_changed_by: currentUser.id,
+        p_content_snapshot: { summary: content },
+        p_change_summary: `Reverted to version ${versionId}`,
       });
+
+      if (versionError) {
+        // Surfaced, not swallowed: the content did revert, but an unrecorded
+        // revert is an audit gap the clinician needs to know about.
+        console.error('Revert saved but version record failed:', versionError);
+        toast.error('Reverted, but the version history entry could not be written');
+      }
 
       // Create timeline entry
       if (onCreateTimelineEntry) {
