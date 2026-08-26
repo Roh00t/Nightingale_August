@@ -105,11 +105,31 @@ const session = await signIn();
 const patientId = await resolvePatientId(session);
 const url = `${BASE}/patients/${patientId}`;
 
-// Supabase SSR stores the session in a project-scoped cookie.
-const projectRef = new URL(SUPABASE_URL).hostname.split(".")[0];
-const cookie = `sb-${projectRef}-auth-token=${encodeURIComponent(
-  JSON.stringify([session.access_token, session.refresh_token, null, null, null])
-)}`;
+// Build the session cookie with @supabase/ssr itself rather than hand-crafting
+// it. The library base64-encodes and chunks the session, and that format has
+// changed across versions -- a hand-rolled cookie silently produces a redirect
+// to /login, which then "measures" a 3ms redirect instead of a render.
+async function buildSessionCookie() {
+  const { createServerClient } = await import("@supabase/ssr");
+  const jar = new Map();
+
+  const client = createServerClient(SUPABASE_URL, ANON_KEY, {
+    cookies: {
+      getAll: () => [...jar.entries()].map(([name, value]) => ({ name, value })),
+      setAll: (list) => list.forEach(({ name, value }) => jar.set(name, value)),
+    },
+  });
+
+  await client.auth.setSession({
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+  });
+
+  if (jar.size === 0) throw new Error("@supabase/ssr emitted no session cookies");
+  return [...jar.entries()].map(([n, v]) => `${n}=${encodeURIComponent(v)}`).join("; ");
+}
+
+const cookie = await buildSessionCookie();
 
 console.log(`\nGlance View warm-path latency`);
 console.log(`  target   ${url}`);
@@ -129,7 +149,13 @@ for (let i = 0; i < SAMPLES; i++) {
 process.stdout.write("\n\n");
 
 if (nonOk) {
-  console.error(`  WARNING: ${nonOk}/${SAMPLES} responses were not 200 — the number below is not a valid render measurement.\n`);
+  console.error(
+    `  ABORTED: ${nonOk}/${SAMPLES} responses were not 200.\n` +
+    `  The request is not reaching the rendered page — most likely the session\n` +
+    `  cookie was rejected and the app redirected to /login. Timing a redirect\n` +
+    `  would report a fast number that means nothing, so no figure is reported.\n`
+  );
+  process.exit(2);
 }
 
 const sorted = [...timings].sort((a, b) => a - b);

@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**177 automated tests, runnable offline with no credentials.**
+**184 automated tests, runnable offline with no credentials.**
 
 ---
 
@@ -334,14 +334,42 @@ wrong thing), then times N sequential requests to last byte. Sequential by
 design — concurrency measures throughput, which is a different claim than
 single-request latency.
 
-```
-MEASUREMENT PENDING — see PROGRESS.md.
-The harness is written and the SSR path is built and verified
-(`/patients/[id]` reports as server-rendered on demand in the production build),
-but the deployed database currently returns 42501 for every request because the
-first deployment of 001_foundation.sql granted no table privileges. Numbers will
-be filled in from a real run rather than estimated.
-```
+| | Latency |
+|---|---|
+| min | 54.3 ms |
+| mean | 69.9 ms |
+| **P50** | **68.4 ms** |
+| **P95** | **79.7 ms** |
+| **P99** | **96.5 ms** |
+| max | 239.7 ms |
+
+**P95 79.7 ms against a 300 ms budget — 3.8× headroom. n = 100 sequential warm
+requests, 15 warmup requests discarded.**
+
+Reproduce with `node scripts/measure_glance.mjs --n 100 --warmup 15` against a
+production build (`npm run build && npm start`).
+
+**What is included.** Full server render of the authenticated route, including
+the Supabase round trip for the `glance_cache` read, measured to last byte of
+HTML. The Supabase project is remote, so network time to the database is inside
+these numbers rather than excluded — the figure is end-to-end for the page, not
+just local compute.
+
+**What is excluded**, and stated so the number is not read as more than it is:
+browser parse, hydration and paint; the client-side timeline, comments and
+highlights fetches, which are deliberately off this path; and cold starts.
+
+**The harness aborts rather than reporting a fast wrong number.** An early run
+reported P95 3.1 ms — it was timing a redirect to `/login`, because a
+hand-written session cookie did not match the format `@supabase/ssr` 0.5.2
+expects. The script now builds the cookie with the library itself and exits
+non-zero if any sampled response is not 200. A latency measurement that silently
+measures the wrong endpoint is worse than no measurement, because it looks like
+success.
+
+Server HTML was separately verified to contain the rendered glance content
+(`eGFR`, `Cardiology referral`, the care plan score) rather than an empty shell,
+confirming the card is server-rendered and not hydrated in afterwards.
 
 **Data decay.** Three tiers: hot (<6 months, in every query), warm (archived,
 excluded by default, reachable by clinicians and admins), cold (off-database,
@@ -367,9 +395,13 @@ unvalidated — there is no labelled outcome set here. The calibration harness
 exists precisely so they can be refitted against real data rather than argued
 about.
 
-**Ensemble sampling costs N× tokens.** Single-shot falls back to a neutral 0.5
-agreement prior, so a deployment that cannot afford sampling degrades to
-extraction verification and rule support rather than breaking.
+**Ensemble sampling costs N× tokens, and without it confidence is coarse.**
+Single-shot falls back to a neutral 0.5 agreement prior, so a byte-exact claim
+with no rule support scores exactly 0.60 — the abstention threshold — and
+surfaces as medium. In that configuration abstention only fires for claims that
+matched after normalisation (0.51). The signal is directionally right but not
+discriminating; enabling sampling is what makes it so. This is asserted by test
+rather than left as a footnote, so the limitation cannot be forgotten.
 
 **The collab server needs secrets the demo environment lacks**, so real-time
 editing degrades to "Local Only" with direct saves. Concurrency semantics are
@@ -405,6 +437,7 @@ node scripts/measure_glance.mjs
 | `test_phi_redaction` | 33 | zero PHI leakage; clinical values preserved |
 | `test_clinical_safety` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
 | `test_meta_rls_sanity` | 3 | guards against a green suite that proves nothing |
+| `test_highlights_pipeline_safety` | 7 | the safety layer runs *inside the real route*, not just as modules |
 
 The suites build their own PostgreSQL cluster from the migration file and run as
 a non-superuser. A superuser bypasses RLS, which would make every access-control

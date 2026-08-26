@@ -43,13 +43,13 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 ### 1. Shared "Care Note"
 - [x] Unified single page per patient
 - [x] Top/Glance card: content, open actions, critical risk flags
-- [~] **Glance P95 ≤300ms** — SSR path built (route now `ƒ` dynamic, single indexed read); **measurement blocked on Supabase credentials**
+- [x] **Glance P95 ≤300ms** — **MEASURED: P95 79.7ms** (P50 68.4 / P99 96.5, n=100, 15 warmup discarded). 3.8× headroom.
 - [x] Longitudinal timeline, time-ordered continuous feed
 - [x] Entry types: patient/AI session summaries, AI-scribed consults, staff edits, clinician edits, system events
 - [x] Per-entry metadata: `author_role`, `author_id`, `timestamp`, `type`, `provenance_pointer`
 - [x] Threaded comments with resolve/unresolve
 - [x] `@mentions`
-- [ ] Assignments ("Assign to staff") — brief marks optional; deprioritised
+- [x] Assignments — `ActionItems.tsx` exposes Assign/Done/Defer
 - [x] Revision history: revert verified additive & auditable; version numbering now atomic
 - [ ] "View changes since X"
 
@@ -60,7 +60,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Self-learning importance — loop closed, clinic-scoped, proven by test
 - [x] Hard constraint: 1-click accept/reject on highlights
 - [x] Each highlight shows `risk_reason` + provenance
-- [~] Data decay — DB complete, undocumented
+- [x] Data decay — DB complete + documented in the technical brief
 
 ### 3. RBAC (Phase 1 ✅)
 - [x] Server-side via PostgreSQL RLS; UI-only checks avoided
@@ -72,7 +72,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 ### 4. Provenance & Trust
 - [x] Click highlight → navigate to source entry
 - [x] Trust badges with confidence
-- [~] **Conflict resolution** — deterministic engine done + tested; **UI surfacing pending**
+- [x] **Conflict resolution** — engine + UI badges with side-by-side verbatim quotes
 
 ### 5. Privacy & Security (Phase 2 ✅)
 - [x] Presidio + spaCy `en_core_web_sm`
@@ -81,7 +81,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Logs record counts/types, never PHI
 - [x] All 5 AI endpoints require verified JWT; fail closed
 - [x] Synthetic data only
-- [ ] TLS/at-rest — document (Supabase-managed)
+- [x] TLS/at-rest — documented (Supabase-managed)
 
 ### 6. Micro-tests — **113 passing, 0 failing, no credentials required**
 - [x] `test_rbac_scope` — 12, executing against real RLS
@@ -94,10 +94,10 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 
 ### 7. Deliverables
 - [x] Git repo with clear commit history (3 commits, descriptive)
-- [ ] README: setup/run, **where redaction happens**, **how RBAC is enforced** — stale
-- [ ] 2–3 page Technical Brief: architecture diagram, full schema linkage, trade-offs
-- [x] `ATTRIBUTION.txt` — needs Presidio/spaCy/PyJWT added
-- [ ] `DEMO_SCRIPT.md` — currently 1 byte
+- [x] README — rewritten: two-file env, redaction pipeline, RBAC as grants+policies
+- [x] Technical Brief — architecture, schema, safety layer, measured P95, trade-offs
+- [x] `ATTRIBUTION.txt` — Presidio/spaCy/PyJWT/cryptography/psycopg added with licences
+- [x] `DEMO_SCRIPT.md` — 3 scenarios; conflict created live in Scenario B
 - [ ] Demo video (Scenarios A/B/C)
 
 ### 8. Bonus
@@ -130,7 +130,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 
 **Exit:** all 5 suites green with pasted output, on a machine with no credentials.
 
-### Phase 4 — Glance View P95 🔶 BUILT, UNMEASURED
+### Phase 4 — Glance View P95 ✅ MEASURED
 - Convert `frontend/app/(dashboard)/patients/[id]/page.tsx` to a server component performing
   one indexed read of `care_notes.glance_cache`. Timeline, comments and highlights move to a
   separate streamed boundary (`<Suspense>`), so the card is not blocked by history reads.
@@ -243,7 +243,7 @@ what is it, how would we know if it were wrong, what happens when it is.
       cannot be bulk-dismissed; dismissal bursts are honoured but excluded from training;
       random audit sampling of unsurfaced items to measure false negatives (exposure bias).
 
-**64 safety tests. Suite total: 177 passing.**
+**64 safety tests + 7 pipeline-integration tests. Suite total: 184 passing.**
 
 Bugs these tests caught in my own code, which would otherwise have shipped:
 1. `\b\d+\b` does not match "100" in "100mg" — the hallucinated-dose case passed the patient

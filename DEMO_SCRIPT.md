@@ -67,7 +67,26 @@ to exact words, and the risk badge is not the model's opinion.
 > **Say:** "That's a measured P95 over N sequential warm requests, not an
 > estimate. Method's in the brief."
 
-### A2. Click-to-trace — provenance (75s)
+### A2. Sunshine disclosure block (50s)
+
+1. Point at the block above the Top Card.
+
+> **Say:** "Before any content, this answers three things: what needs doing, how
+> much of this is the AI's opinion, and whether it's auditable. Open actions and
+> critical flags up top. Then how many highlights are AI-derived, the mean
+> measured confidence, how many claims the system *declined* to make, how many
+> had their risk raised by a deterministic rule, and provenance coverage."
+
+2. Hover **Mean confidence** and read the decomposition aloud.
+
+> **Say:** "0.50 agreement across samples, 0.35 extraction verification, 0.15
+> rule support. If no assessment was recorded it says 'not assessed' rather than
+> showing a comforting default — an aggregate trust number is itself a number
+> that can be wrong."
+
+3. Hover **Authorship** — human versus system entry counts.
+
+### A3. Click-to-trace — provenance (75s)
 
 1. In the Top Card, click the **critical eGFR highlight**.
 2. The timeline scrolls to the January 2026 lab entry and **the exact phrase
@@ -86,7 +105,13 @@ to exact words, and the risk badge is not the model's opinion.
 > 'Medium' means 0.60 to 0.84 — the number is published, not vibes. Below 0.60
 > the system abstains and sends the item to review rather than guessing."
 
-### A3. Deterministic risk floor (60s)
+### A4. Deterministic risk floor (60s)
+
+> **Note:** conflict badges are demonstrated in Scenario B, where the
+> contradiction is *created live*. The seeded data deliberately contains none —
+> a clinician revising their own dose over time is a correction, not a
+> disagreement, and the detector correctly ignores it.
+
 
 1. Point at the **Rule floor** chip on the eGFR highlight. Hover it.
 
@@ -110,21 +135,7 @@ print('negated:', assess_risk('Anaphylaxis ruled out').label)
 > escalate — over-firing on negated findings is how you train a care team to
 > ignore alerts."
 
-### A4. Conflict badge (75s)
-
-1. Click the **contradiction chip** on the Top Card.
-2. Hover the conflict badge. Show **both quotes side by side** — clinician's
-   `10mg` against staff's `100mg`, each verbatim with its author.
-
-> **Say:** "Two professionals disagree about a dose. The system has no basis to
-> decide which is right, and picking one would manufacture false certainty about
-> a dosing decision — so it doesn't. It shows both, verbatim, and says a
-> clinician has to resolve it. Allergy contradictions rank above dosage, because
-> those are the ones that kill people."
-
-3. Click through to open both source entries.
-
-### A5. Accept / reject (45s)
+### A5. Accept / reject and dismissal friction (45s)
 
 1. Accept a highlight — one click.
 2. Attempt to dismiss a **critical** item. Show that it demands a typed reason
@@ -149,7 +160,35 @@ print('negated:', assess_risk('Anaphylaxis ruled out').label)
    sleeping better this week."*
 3. Add a comment on the January lab entry with an `@clinician` mention.
 
-### B2. Cross-role write protection (60s)
+### B2. Create a contradiction, live (90s)
+
+1. As staff, add a second note, typed on camera:
+
+   > *"Administered Lisinopril 100mg as charted. Chart says not allergic to
+   > penicillin."*
+
+2. Switch to the clinician window and reload Alice Wong.
+3. The Sunshine block now shows **2 unresolved contradictions**. Click it.
+4. Hover each conflict badge and show **both quotes side by side**:
+   - **Dosage (high):** clinician `10mg` against staff `100mg`
+   - **Allergy (critical):** clinician recorded *allergic to penicillin*, staff
+     recorded *not allergic*
+
+> **Say:** "Nobody told the system these disagree. It extracts medication-dose
+> pairs and allergy assertions deterministically — regex, no model, so it can't
+> invent a contradiction that isn't there. Two professionals disagree about a
+> dose and about an allergy. It has no basis to decide who's right, and picking
+> one would manufacture false certainty about a dosing decision. So it shows
+> both, verbatim, with who said what, and says a clinician has to resolve it.
+> Allergy ranks above dosage, because those are the ones that kill people."
+
+5. Point out what is *not* flagged: the clinician raising Lisinopril from 5mg to
+   10mg across two of their own notes.
+
+> **Say:** "That's the same author correcting themselves over time. Flagging it
+> would be noise, and noise is how you train a team to ignore alerts."
+
+### B3. Cross-role write protection (60s)
 
 1. Attempt to edit the clinician's January lab note. It is not editable.
 
@@ -159,7 +198,7 @@ print('negated:', assess_risk('Anaphylaxis ruled out').label)
 
 2. Show the policy in `001_foundation.sql`.
 
-### B3. Prove it from outside the UI (75s) — *the strongest moment in the demo*
+### B4. Prove it from outside the UI (75s)
 
 ```bash
 cd ai-service && .venv/bin/python -m pytest tests/test_rbac_scope.py tests/test_meta_rls_sanity.py -v
@@ -179,7 +218,7 @@ service role         11   (RLS bypassed)
 > run as a non-superuser, because a superuser bypasses RLS and every one of
 > these assertions would pass while proving nothing."
 
-### B4. Multi-tenant isolation (30s)
+### B5. Multi-tenant isolation (30s)
 
 1. Log in as `dr.miller@sunrise.demo`. Only Robert Lee is visible.
 

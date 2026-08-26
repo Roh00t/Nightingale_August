@@ -4,12 +4,14 @@ import React, { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
 import { TopCard } from '@/components/glance/TopCard';
+import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAppStore } from '@/lib/stores/app-store';
+import { detectClinicalConflicts } from '@/lib/safety/clinical-conflict';
 import { toast } from 'sonner';
 import type {
   CareNote,
@@ -220,6 +222,33 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * words", which is what makes an AI claim checkable in a couple of seconds
    * rather than requiring the clinician to re-read the whole note.
    */
+  /**
+   * Clinical contradictions across authors, computed from the loaded timeline.
+   *
+   * Deterministic: a medication asserted with two different doses, or an allergy
+   * asserted and denied, by two different authors. Same-author revisions and
+   * changing vitals are deliberately excluded — those are the record working,
+   * not a disagreement, and flagging them is how alert fatigue starts.
+   */
+  const conflicts = React.useMemo(() => detectClinicalConflicts(entries), [entries]);
+  const conflictCount = conflicts.length;
+
+  const handleReviewConflicts = useCallback(() => {
+    const first = conflicts[0];
+    if (!first?.claims?.length) return;
+    const entryId = first.claims[0].entry_id;
+    setHighlightedEntryId(entryId);
+    setHighlightedSpan(null);
+    document.getElementById(`entry-${entryId}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    toast.warning(
+      `${first.conflict_class} conflict: ` +
+      first.claims.map((c) => `${c.author_role} noted ${c.value}`).join(' vs ') +
+      ' — needs clinician resolution'
+    );
+    setTimeout(() => setHighlightedEntryId(null), 6000);
+  }, [conflicts, setHighlightedEntryId, setHighlightedSpan]);
+
   const handleHighlightClick = useCallback((highlightId: string, sourceEntryId: string | null) => {
     if (!sourceEntryId) return;
 
@@ -865,6 +894,12 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-4 sm:p-6 lg:p-8 h-full overflow-auto">
         {/* Left column: Care Timeline */}
         <div className="space-y-4">
+          <SunshineBlock
+            glanceCache={careNote.glance_cache}
+            highlights={[]}
+            entries={careInstructions}
+            userRole="patient"
+          />
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
               <Heart className="w-5 h-5 text-muted-foreground" />
@@ -958,7 +993,15 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     return (
       <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 h-full overflow-auto xl:overflow-hidden">
         {/* Left column: At a Glance */}
-        <div className="xl:col-span-3 overflow-visible xl:overflow-auto">
+        <div className="xl:col-span-3 overflow-visible xl:overflow-auto space-y-3">
+          <SunshineBlock
+            glanceCache={careNote.glance_cache}
+            highlights={highlights}
+            entries={entries}
+            userRole="admin"
+            conflictCount={conflictCount}
+            onReviewConflicts={handleReviewConflicts}
+          />
           <TopCard
             glanceCache={careNote.glance_cache}
             highlights={highlights}
@@ -1122,7 +1165,17 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
 
       <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 flex-1 overflow-auto">
         {/* Left column: At a Glance (col-span-3) */}
-        <div className="xl:col-span-3">
+        <div className="xl:col-span-3 space-y-3">
+          {/* Sunshine disclosure sits above everything: open actions, how much
+              of this is AI, and whether it is auditable — before any content. */}
+          <SunshineBlock
+            glanceCache={careNote.glance_cache}
+            highlights={highlights}
+            entries={entries}
+            userRole={activeRole}
+            conflictCount={conflictCount}
+            onReviewConflicts={handleReviewConflicts}
+          />
           <TopCard
             glanceCache={careNote.glance_cache}
             highlights={highlights}
@@ -1135,6 +1188,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onRejectHighlight={handleRejectHighlight}
             loadingAction={loadingAction}
             onToggleCarePlanItem={handleToggleCarePlanItem}
+            conflictCount={conflictCount}
+            hasCriticalConflict={conflicts.some((c) => c.severity === 'critical')}
+            onReviewConflicts={handleReviewConflicts}
           />
         </div>
 
