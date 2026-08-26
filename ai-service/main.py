@@ -33,7 +33,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers import highlights, patient_message, redact, scribe, summarize
+from routers import conflicts, highlights, patient_message, redact, scribe, summarize
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -174,6 +174,7 @@ app.include_router(highlights.router)
 app.include_router(redact.router)
 app.include_router(patient_message.router)
 app.include_router(scribe.router)
+app.include_router(conflicts.router)
 
 
 # ---------------------------------------------------------------------------

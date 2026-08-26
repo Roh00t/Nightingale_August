@@ -11,10 +11,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAppStore } from '@/lib/stores/app-store';
-import { detectClinicalConflicts } from '@/lib/safety/clinical-conflict';
 import { toast } from 'sonner';
 import type {
   CareNote,
+  ClinicalConflict,
   TimelineEntry,
   Comment,
   Highlight,
@@ -223,15 +223,62 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * rather than requiring the clinician to re-read the whole note.
    */
   /**
-   * Clinical contradictions across authors, computed from the loaded timeline.
+   * Clinical contradictions across authors.
    *
-   * Deterministic: a medication asserted with two different doses, or an allergy
-   * asserted and denied, by two different authors. Same-author revisions and
-   * changing vitals are deliberately excluded — those are the record working,
-   * not a disagreement, and flagging them is how alert fatigue starts.
+   * Detected server-side by POST /api/ai/conflicts. This used to run in a
+   * TypeScript port of the Python detector so the UI could flag contradictions
+   * without a round trip, but nothing kept the two copies in lockstep — they
+   * could drift until one flagged a dosing conflict and the other did not.
+   * For a safety control that is not an acceptable failure mode, so there is
+   * now one implementation and this calls it.
+   *
+   * Degrades quietly: if the AI service is unreachable, no conflicts render.
+   * Never blocks the timeline, and never invents a "no conflicts" assurance —
+   * `conflictsChecked` distinguishes "none found" from "not checked".
    */
-  const conflicts = React.useMemo(() => detectClinicalConflicts(entries), [entries]);
+  const [conflicts, setConflicts] = useState<ClinicalConflict[]>([]);
+  const [conflictsChecked, setConflictsChecked] = useState(false);
   const conflictCount = conflicts.length;
+
+  useEffect(() => {
+    if (!token || entries.length === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/conflicts`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              entries: entries.map((e) => ({
+                id: e.id,
+                author_id: e.author_id,
+                author_role: e.author_role,
+                content_text: e.content_text,
+                created_at: e.created_at,
+              })),
+            }),
+          },
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setConflicts(data.conflicts ?? []);
+          setConflictsChecked(true);
+        }
+      } catch {
+        // AI service unavailable. Contradictions simply are not shown; the
+        // record itself is unaffected.
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [entries, token]);
 
   const handleReviewConflicts = useCallback(() => {
     const first = conflicts[0];

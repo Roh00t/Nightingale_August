@@ -196,56 +196,59 @@ npm run build && npm start && node scripts/measure_glance.mjs
 npm run dev   # fix dev:ai to use .venv/bin/uvicorn first
 ```
 
-## Open risks
+## Open risks — status as of 27 Aug 2026
 
-1. **Time.** Ambient voice capture is the largest item in the brief. If Phase 3/4 overrun, it
-   is the first thing to cut — the hard constraints outscore it.
-2. ~~`createNoteVersion` race + `changed_by` sentinel~~ — **FIXED.** Numbering moved into
-   `create_note_version()` under a per-care-note advisory lock; `changed_by` now passes NULL.
-   Proven by a 10-thread concurrent allocation test.
-3. **`app/api/patients/route.ts`** still mints new patient accounts with a hardcoded password.
-   Gated behind clinician/admin auth so not a bypass, but should be closed before submission.
-4. **Demo video** needs a working end-to-end stack, which needs real Supabase credentials for
-   the hosted demo. Local Postgres covers tests but not the recorded demo.
-5. **P95 is built but unproven.** `scripts/measure_glance.mjs` signs in to Supabase to exercise
-   the authenticated render path; with `.env` blank it cannot run. The number must be measured
-   before the brief can state it — do not claim a figure until this executes.
+### 1. Time / ambient voice capture — **STILL OPEN, and the only unmet brief item**
+Not implemented. No `MediaRecorder`, no PWA manifest, no transcription, no
+speaker labelling. Everything downstream of it exists — redaction,
+`/api/ai/scribe`, the three `ai_*` entry types, provenance — so it is a
+UI-plus-transcription job rather than an architecture one, but it is still the
+largest single remaining item in the brief.
 
----
+Recommendation: it is a **bonus**, and the hard constraints (RBAC, redaction,
+five micro-tests, P95) are all met and evidenced. Do not start it unless the
+demo video is already recorded.
 
-## Clinical safety layer (organiser hints)
+### 2. `createNoteVersion` race and `changed_by` sentinel — **CLOSED**
+Verified, not assumed:
+- The read-then-write is gone. `collab-server/persistence.ts` calls the
+  `create_note_version()` RPC, which allocates `version_number` under
+  `pg_advisory_xact_lock` inside one transaction.
+- `changedByUserId` is `null` for system snapshots, never the string `"system"`.
+  The two remaining `"system"` occurrences are a code comment and a log label.
+- Covered by `TestAtomicVersionAllocation`: 10 concurrent threads produce
+  distinct, contiguous version numbers, and a NULL author is accepted.
 
-Added in response to the organisers' hints. Each module answers their framing:
-what is it, how would we know if it were wrong, what happens when it is.
+### 3. `app/api/patients/route.ts` hardcoded password — **CLOSED**
+Every patient created through this route shared one guessable credential. It was
+gated behind a clinician/admin session so it was never an authentication bypass,
+but anyone who learned the string could sign in as any of them.
 
-- [x] **Extraction over generation** — `services/safety/extraction.py`. Every claim must be a
-      verbatim span of a source entry; paraphrase is rejected, not stored. Dropping a negation
-      ("not allergic" → "allergic") fails validation. Rejected claims get span (0,0), never a
-      fabricated offset. Rejection rate is observable as a drift signal.
-- [x] **Deterministic risk floors** — `services/safety/risk_rules.py`. `final = max(floor, model)`.
-      The model may raise risk, never lower it. Keyword rules + numeric thresholds + negation
-      guards in both directions. Every floor names its trigger.
-- [x] **Measured confidence + abstention** — `services/safety/confidence.py`. Score =
-      0.50×ensemble agreement + 0.35×extraction verification + 0.15×rule support. `medium` is
-      defined as 0.60–0.84, published in `BANDS`. Below 0.60 the system abstains — except for
-      critical findings, which surface flagged rather than being silently withheld.
-      Calibration via `brier_score()` / `calibration_report()`.
-- [x] **Clinical contradiction detection** — `services/safety/clinical_conflict.py`. Allergy
-      (critical) and dosage (high) contradictions across authors, with both verbatim quotes.
-      Deterministic regex, no model. Never auto-resolves. Same-author revisions and changing
-      vitals are correctly not conflicts.
-- [x] **Patient-facing firewall** — `services/safety/patient_gate.py`. Maker-checker: grounding
-      check (every dose/number/drug traces to the record), prohibited speech acts (diagnosis,
-      prognosis, stop-treatment), then named human approval by clinician/admin only. Approval
-      cannot rescue a blocked draft. Sent messages carry visible attribution.
-- [x] **Feedback loop safety** — `services/safety/feedback.py`. Critical importance floor
-      (0.90) that learned weight cannot bury; critical dismissals need a typed reason and
-      cannot be bulk-dismissed; dismissal bursts are honoured but excluded from training;
-      random audit sampling of unsurfaced items to measure false negatives (exposure bias).
+Now: a 32-byte random password that is never persisted, logged or returned, plus
+a one-time `generateLink` recovery URL so the patient sets their own. The UI no
+longer displays a password, because none exists to display.
 
-**64 safety tests + 7 pipeline-integration tests. Suite total: 184 passing.**
+### 4. Demo video / end-to-end stack — **CLOSED (unblocked)**
+Credentials are in place and the full stack was verified live:
+`/ready` reports all five checks true; a real ES256 clinician JWT authenticates
+against the AI service; `/api/ai/conflicts` returns both contradictions
+including the spelled-out `one hundred mg` normalised to `100mg`; redaction
+returns `<PERSON_1>, NRIC <NRIC_1>, mobile <PHONE_1>`.
 
-Bugs these tests caught in my own code, which would otherwise have shipped:
-1. `\b\d+\b` does not match "100" in "100mg" — the hallucinated-dose case passed the patient
-   gate silently. Now number+unit tokens with set membership, not substring.
-2. Negation was checked only backwards, so "anaphylaxis ruled out" escalated to critical.
+Recording is now purely a scheduling matter. `DEMO_SCRIPT.md` is written and its
+Scenario B creates the contradiction live.
+
+### 5. NEW — `source .env` corrupts the JWK
+Found while verifying risk 4. `SUPABASE_JWT_JWK` holds a JSON document; the
+shell strips its quotes on `source`, and because a real environment variable
+takes precedence over the `.env` file, every AI endpoint then returns 503. Each
+service parses `.env` itself — just start it and let it. Documented in the
+README.
+
+### 6. NEW — JWK **Set** handling was broken in both services
+Also found verifying risk 4, and it had never run before because credentials did
+not exist. Supabase publishes `{"keys":[...]}` and rotates within it; both
+services passed the whole set where a single key was expected. Both now select
+by the token's `kid`, reject an unmatched `kid` rather than guessing, and return
+**401** for a malformed token instead of 500/503 — a bad credential is a client
+error, not a service outage.

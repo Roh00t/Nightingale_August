@@ -58,13 +58,39 @@ let _cachedPublicKey: KeyObject | null = null;
  * Build a public key from the SUPABASE_JWT_JWK environment variable (ES256 JWK)
  * or fall back to SUPABASE_JWT_SECRET for legacy HS256 projects.
  */
-function getVerificationKey(): { key: string | KeyObject; algorithms: jwt.Algorithm[] } {
-  // Prefer ES256 JWK (new Supabase projects use asymmetric signing keys)
+function getVerificationKey(
+  kid?: string
+): { key: string | KeyObject; algorithms: jwt.Algorithm[] } {
+  // Prefer ES256 JWK (current Supabase projects use asymmetric signing keys).
   const jwkJson = process.env.SUPABASE_JWT_JWK;
   if (jwkJson) {
     if (!_cachedPublicKey) {
-      const jwk = JSON.parse(jwkJson);
-      _cachedPublicKey = createPublicKey({ key: jwk, format: "jwk" });
+      const parsed = JSON.parse(jwkJson);
+      // Supabase publishes a JWK *Set* and rotates within it, so the token's
+      // kid selects the key. Passing the whole set to createPublicKey throws.
+      const keys: Record<string, unknown>[] = Array.isArray(parsed?.keys)
+        ? parsed.keys
+        : [parsed];
+
+      if (keys.length === 0) {
+        throw new Error("SUPABASE_JWT_JWK contains an empty key set");
+      }
+
+      const jwk = kid
+        ? keys.find((k) => k.kid === kid)
+        : keys.length === 1
+          ? keys[0]
+          : undefined;
+
+      if (!jwk) {
+        throw new Error(
+          kid
+            ? `No key in SUPABASE_JWT_JWK matches the token's kid (${kid}); the signing key may have rotated`
+            : "SUPABASE_JWT_JWK holds multiple keys but the token carries no kid"
+        );
+      }
+
+      _cachedPublicKey = createPublicKey({ key: jwk as never, format: "jwk" });
     }
     return { key: _cachedPublicKey, algorithms: ["ES256"] };
   }
@@ -88,7 +114,8 @@ function getVerificationKey(): { key: string | KeyObject; algorithms: jwt.Algori
  * - HS256 via SUPABASE_JWT_SECRET (legacy projects)
  */
 export function verifyToken(token: string): SupabaseJwtPayload {
-  const { key, algorithms } = getVerificationKey();
+  const decodedHeader = jwt.decode(token, { complete: true })?.header;
+  const { key, algorithms } = getVerificationKey(decodedHeader?.kid);
 
   try {
     const decoded = jwt.verify(token, key, { algorithms }) as SupabaseJwtPayload;

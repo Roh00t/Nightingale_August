@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**237 automated tests, all runnable offline with no credentials.**
+**257 automated tests, all runnable offline with no credentials.**
 
 ---
 
@@ -80,8 +80,16 @@ NEXT_PUBLIC_AI_SERVICE_URL=http://localhost:8000
 NEXT_PUBLIC_COLLAB_URL=ws://localhost:1234
 ```
 
-> A blank value is worse than a missing one. `os.getenv(key, default)` returns
-> `""` for `KEY=`, defeating every fallback. Comment the line out instead.
+> **A blank value is worse than a missing one.** `os.getenv(key, default)`
+> returns `""` for `KEY=`, defeating every fallback. Comment the line out instead.
+
+> **Do not `source .env` before starting a service.** `SUPABASE_JWT_JWK` holds a
+> JSON document, and the shell strips its quotes on `source`, exporting a corrupt
+> value. Because a real environment variable takes precedence over the `.env`
+> file, every AI endpoint then returns 503 with
+> `SUPABASE_JWT_JWK is not valid JSON`. Each service loads `.env` itself with a
+> proper parser — just start it and let it. If you must export by hand,
+> single-quote the JWK value.
 
 ### 4. Database
 
@@ -296,7 +304,7 @@ Full design rationale, failure modes and measured latency are in
 ## Testing
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 237 tests
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 257 tests
 cd frontend && npx tsc --noEmit
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs                          # glance P95
@@ -314,6 +322,7 @@ node scripts/measure_glance.mjs                          # glance P95
 | `test_meta_rls_sanity.py` | 3 | guards against vacuous greens |
 | `test_highlights_pipeline_safety.py` | 7 | safety layer runs inside the real `/api/ai/highlights` route |
 | `test_adversarial_safety.py` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS probes |
+| `test_conflicts_endpoint.py` | 20 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
 
 ## Licence
 

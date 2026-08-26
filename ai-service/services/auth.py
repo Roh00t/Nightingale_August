@@ -36,21 +36,63 @@ class CallerIdentity:
     display_name: str
 
 
-def _verification_key() -> tuple[object, list[str]]:
+def _select_jwk(document: dict, kid: str | None) -> dict:
     """
-    Resolve the Supabase JWT verification key.
+    Pick the right key from a JWK, which may be a single key or a JWK Set.
+
+    Supabase publishes a SET (``{"keys": [...]}``) and rotates within it, so the
+    token's `kid` header selects the key. Passing the whole set to
+    ``from_jwk`` fails with an opaque JSON error, which is exactly how this
+    surfaced: the path had never run until real credentials existed.
+    """
+    keys = document.get("keys")
+    if not isinstance(keys, list):
+        return document  # already a single JWK
+
+    if not keys:
+        raise RuntimeError("SUPABASE_JWT_JWK contains an empty key set")
+
+    if kid:
+        for key in keys:
+            if key.get("kid") == kid:
+                return key
+        raise RuntimeError(
+            f"No key in SUPABASE_JWT_JWK matches the token's kid ({kid}). "
+            "The signing key may have rotated; refresh the JWK."
+        )
+
+    if len(keys) > 1:
+        raise RuntimeError(
+            "SUPABASE_JWT_JWK holds multiple keys but the token carries no kid, "
+            "so the correct key cannot be chosen."
+        )
+    return keys[0]
+
+
+def _verification_key(token: str) -> tuple[object, list[str]]:
+    """
+    Resolve the Supabase JWT verification key for a specific token.
 
     Prefers ES256 via SUPABASE_JWT_JWK (current Supabase projects use asymmetric
     signing keys); falls back to the legacy HS256 shared secret.
     """
     jwk_json = os.environ.get("SUPABASE_JWT_JWK")
     if jwk_json:
-        from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+        try:
+            document = json.loads(jwk_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"SUPABASE_JWT_JWK is not valid JSON: {exc}") from exc
 
-        key: EllipticCurvePublicKey = jwt.algorithms.ECAlgorithm.from_jwk(  # type: ignore[assignment]
-            json.dumps(json.loads(jwk_json))
-        )
-        return key, ["ES256"]
+        kid = jwt.get_unverified_header(token).get("kid")
+        selected = _select_jwk(document, kid)
+        algorithm = selected.get("alg", "ES256")
+
+        if selected.get("kty") == "RSA":
+            key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(selected))
+            return key, [algorithm]
+
+        key = jwt.algorithms.ECAlgorithm.from_jwk(json.dumps(selected))
+        return key, [algorithm]
 
     secret = os.environ.get("SUPABASE_JWT_SECRET")
     if secret:
@@ -79,7 +121,17 @@ async def require_caller(
         )
 
     try:
-        key, algorithms = _verification_key()
+        key, algorithms = _verification_key(credentials.credentials)
+    except jwt.PyJWTError as exc:
+        # A malformed token cannot even be parsed for its `kid`. That is a bad
+        # request, not a service misconfiguration — returning 503 here would
+        # tell an attacker the service is broken and would page an on-call
+        # engineer for what is simply an invalid credential.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Malformed token: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
     except RuntimeError as exc:
         logger.error("JWT verification unavailable: %s", exc)
         raise HTTPException(

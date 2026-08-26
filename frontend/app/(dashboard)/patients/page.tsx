@@ -38,7 +38,14 @@ export default function PatientsPage() {
   const [showNewPatient, setShowNewPatient] = useState(false);
   const [newPatientName, setNewPatientName] = useState('');
   const [creating, setCreating] = useState(false);
-  const [createdPatient, setCreatedPatient] = useState<{ display_name: string; email: string; id: string } | null>(null);
+  const [createdPatient, setCreatedPatient] = useState<{
+    display_name: string;
+    email: string;
+    id: string;
+    /** One-time password-setup link. No password is ever returned. */
+    setup_link?: string | null;
+    setup_note?: string;
+  } | null>(null);
   const router = useRouter();
   const supabase = createClient();
   const { currentUser } = useAppStore();
@@ -288,13 +295,20 @@ export default function PatientsPage() {
                   <span className="text-muted-foreground">Email</span>
                   <span className="font-mono text-xs">{createdPatient.email}</span>
                 </div>
-                <div className="flex items-center justify-between py-1.5 border-b border-border">
-                  <span className="text-muted-foreground">Password</span>
-                  <span className="font-mono text-xs">demo-password-123</span>
+                {/* No password is shown because none exists to show. The
+                    account is created with a random secret that is never
+                    persisted, logged or returned; the patient sets their own
+                    via the one-time link below. */}
+                <div className="flex items-start justify-between gap-3 py-1.5 border-b border-border">
+                  <span className="text-muted-foreground shrink-0">Setup link</span>
+                  <span className="font-mono text-[10px] break-all text-right">
+                    {createdPatient.setup_link ?? 'Not issued — send a reset from the Supabase dashboard'}
+                  </span>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                Open an incognito window and use Manual Login with these credentials.
+                {createdPatient.setup_note ??
+                  'Share the one-time link with the patient so they can set their own password.'}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -302,13 +316,15 @@ export default function PatientsPage() {
                   variant="outline"
                   className="gap-2"
                   onClick={() => {
-                    const text = `Email: ${createdPatient.email}\nPassword: demo-password-123`;
+                    const text = createdPatient.setup_link
+                      ? `Email: ${createdPatient.email}\nSet your password: ${createdPatient.setup_link}`
+                      : `Email: ${createdPatient.email}`;
                     navigator.clipboard.writeText(text);
-                    toast.success('Credentials copied to clipboard');
+                    toast.success('Setup details copied to clipboard');
                   }}
                 >
                   <Copy className="w-3.5 h-3.5" />
-                  Copy Credentials
+                  Copy Setup Link
                 </Button>
                 <Button
                   size="sm"

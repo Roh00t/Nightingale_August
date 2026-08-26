@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**237 automated tests, runnable offline with no credentials.**
+**257 automated tests, runnable offline with no credentials.**
 
 ---
 
@@ -243,6 +243,13 @@ against noise, not against safety-relevant recall.
 Human-human contradictions are real and routine. This is a different problem
 from resolving competing *edits*, and is handled differently.
 
+Detection runs server-side only, at `POST /api/ai/conflicts`. It briefly ran in
+two places — this module and a hand-maintained TypeScript port that let the UI
+flag contradictions without a round trip — but nothing enforced that the two
+agreed, so they could drift until one flagged a dosing conflict and the other
+did not. For a safety control that is not an acceptable failure mode, so the
+port was deleted.
+
 Deterministic regex extracts medication–dosage pairs, allergy assertions and
 their explicit denials, tagged with author, role, timestamp and verbatim quote.
 Where one entity carries two values across two authors, a conflict is raised:
@@ -439,6 +446,7 @@ node scripts/measure_glance.mjs
 | `test_meta_rls_sanity` | 3 | guards against a green suite that proves nothing |
 | `test_highlights_pipeline_safety` | 7 | the safety layer runs *inside the real route*, not just as modules |
 | `test_adversarial_safety` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS boundary probes |
+| `test_conflicts_endpoint` | 20 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
 
 The suites build their own PostgreSQL cluster from the migration file and run as
 a non-superuser. A superuser bypasses RLS, which would make every access-control
