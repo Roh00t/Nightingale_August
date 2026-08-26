@@ -23,6 +23,12 @@ from groq import AsyncGroq, RateLimitError
 logger = logging.getLogger(__name__)
 
 MODEL_ID = "openai/gpt-oss-20b"
+
+# Prepended to every system prompt. LLMs routinely mangle placeholder syntax,
+# which breaks restoration and can leak a raw token into a clinical note.
+PLACEHOLDER_GUARD = (
+    'PLACEHOLDER RULES (mandatory):\\nThe input has had identifying details replaced by placeholders such as <PERSON_1>, <NRIC_1>, <PHONE_1>. Reproduce any placeholder you use EXACTLY as written, including angle brackets, capitalisation, the underscore and the number. Never rewrite <PERSON_1> as [Person 1], (PERSON 1) or Person 1. Never invent a placeholder that was not in the input, and never guess the real value behind one.\\n\\n'
+)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds, exponential backoff
 
@@ -121,6 +127,7 @@ async def generate_summary(
     )
 
     system_prompt = (
+        f"{PLACEHOLDER_GUARD}"
         "You are a clinical summarization assistant for home healthcare professionals. "
         "You receive de-identified care notes and produce structured summaries. "
         "Always respond with valid JSON matching the schema below. "
@@ -185,6 +192,7 @@ async def generate_highlights(
     )
 
     system_prompt = (
+        f"{PLACEHOLDER_GUARD}"
         "You are a clinical risk assessment assistant. Analyze care notes and extract "
         "highlights that require clinical attention. Focus on: medication changes, "
         "vital sign anomalies, new symptoms, falls, wounds, behavioral changes, "
@@ -278,6 +286,7 @@ async def generate_patient_summary(
     )
 
     system_prompt = (
+        f"{PLACEHOLDER_GUARD}"
         f"You are a clinical summarization assistant. {instruction}\n\n"
         "Respond with valid JSON:\n"
         "{\n"

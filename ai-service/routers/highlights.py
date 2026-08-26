@@ -14,8 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+
+from services.auth import CallerIdentity, require_caller
 
 from services.importance import batch_score
 from services.llm import generate_highlights
@@ -101,12 +103,16 @@ class HighlightsResponse(BaseModel):
         "historical clinician engagement, and a provenance pointer to the source entry."
     ),
     responses={
+        401: {"description": "Missing or invalid bearer token"},
         422: {"description": "Validation error in request body"},
         500: {"description": "Internal server error during highlight extraction"},
         503: {"description": "LLM service temporarily unavailable"},
     },
 )
-async def highlights(request: HighlightsRequest) -> HighlightsResponse:
+async def highlights(
+    request: HighlightsRequest,
+    caller: CallerIdentity = Depends(require_caller),
+) -> HighlightsResponse:
     """Extract and score clinical highlights from care note entries."""
     logger.info(
         "Highlights request with %d entries, patient_id=%s",

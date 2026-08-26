@@ -421,7 +421,11 @@ export default function PatientCareNotePage() {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/draft-patient-message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // AI endpoints verify this Supabase JWT (guardrails S6).
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           care_note_id: careNote.id,
           entries: entries.map((e) => ({
@@ -586,7 +590,11 @@ export default function PatientCareNotePage() {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/summarize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // AI endpoints verify this Supabase JWT (guardrails S6).
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           care_note_id: careNote.id,
           entries: entries.map((e) => ({

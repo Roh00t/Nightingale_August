@@ -33,7 +33,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers import highlights, patient_message, redact, summarize
+from routers import highlights, patient_message, redact, scribe, summarize
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -67,9 +67,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     logger.info("Nightingale AI service starting up")
 
+    # Load spaCy + Presidio now rather than on the first request. The model load
+    # dominates cold-start; a request that pays it can time out.
+    try:
+        from services.redaction import warmup
+
+        warmup()
+        logger.info("Presidio + spaCy analyzer warmed")
+    except Exception:
+        logger.exception("Redaction warmup failed - PHI endpoints will error until fixed")
+
     # Validate critical env vars (warn but do not crash -- allows health checks)
     missing: list[str] = []
-    for var in ["GROQ_API_KEY"]:
+    for var in ["GROQ_API_KEY", "SUPABASE_SERVICE_ROLE_KEY"]:
         if not os.environ.get(var):
             missing.append(var)
 
@@ -163,6 +173,7 @@ app.include_router(summarize.router)
 app.include_router(highlights.router)
 app.include_router(redact.router)
 app.include_router(patient_message.router)
+app.include_router(scribe.router)
 
 
 # ---------------------------------------------------------------------------
@@ -200,13 +211,30 @@ async def readiness_check() -> dict[str, object]:
     - GROQ_API_KEY is configured
     - Supabase credentials are configured (optional)
     """
+    redaction_ready = False
+    try:
+        from services.redaction import get_analyzer
+
+        get_analyzer()
+        redaction_ready = True
+    except Exception:
+        logger.exception("Redaction engine unavailable")
+
     checks: dict[str, bool] = {
         "groq_api_key": bool(os.environ.get("GROQ_API_KEY")),
-        "supabase_url": bool(os.environ.get("SUPABASE_URL")),
-        "supabase_key": bool(os.environ.get("SUPABASE_SERVICE_ROLE_KEY")),
+        "supabase_url": bool(
+            os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+        ),
+        "supabase_service_key": bool(os.environ.get("SUPABASE_SERVICE_ROLE_KEY")),
+        "jwt_verification": bool(
+            os.environ.get("SUPABASE_JWT_JWK") or os.environ.get("SUPABASE_JWT_SECRET")
+        ),
+        "redaction_engine": redaction_ready,
     }
 
-    all_critical = checks["groq_api_key"]
+    # Redaction readiness is critical: without it the service cannot guarantee
+    # PHI is stripped, so it must not report ready.
+    all_critical = checks["groq_api_key"] and checks["redaction_engine"]
     status_str = "ready" if all_critical else "not_ready"
 
     return {"status": status_str, "checks": checks}

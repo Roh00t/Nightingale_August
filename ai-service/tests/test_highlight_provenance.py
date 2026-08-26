@@ -144,3 +144,128 @@ class TestHighlightProvenance:
             )
             assert span["from"] >= 0, "Span 'from' should be non-negative"
             assert span["to"] > span["from"], "Span 'to' should be greater than 'from'"
+
+
+# ===========================================================================
+# Provenance schema — offline unit tests
+# ===========================================================================
+# The suite above needs a live seeded Supabase. These do not, so the provenance
+# contract stays verifiable in any checkout.
+#
+# Red-team item 4: the scribe spec describes a pointer carrying session_id /
+# ai_model / recording_duration_sec, while the assertions above require
+# source_type and source_id resolving to a real timeline entry. Those are two
+# distinct link types, reconciled in services/provenance.py as a discriminated
+# union keyed on source_type. These tests pin that reconciliation down.
+
+from services.provenance import (  # noqa: E402
+    ENTRY_TYPE_BY_INTERACTION,
+    SOURCE_TYPE_SCRIBE_SESSION,
+    SOURCE_TYPE_TIMELINE_ENTRY,
+    entry_type_for,
+    locate_span,
+    scribe_session_pointer,
+    timeline_entry_pointer,
+)
+
+
+class TestProvenanceSchema:
+    """The shape of every provenance_pointer the AI service writes."""
+
+    async def test_scribe_pointer_carries_session_fields(self):
+        pointer = scribe_session_pointer(
+            session_id="sess-2026-02-01-alice-chen",
+            ai_model="nightingale-scribe-v1",
+            recording_duration_sec=1245,
+        )
+        assert pointer["source_type"] == SOURCE_TYPE_SCRIBE_SESSION
+        assert pointer["session_id"] == "sess-2026-02-01-alice-chen"
+        assert pointer["ai_model"] == "nightingale-scribe-v1"
+        assert pointer["recording_duration_sec"] == 1245
+
+    async def test_scribe_pointer_omits_absent_duration(self):
+        """Duration is optional; an absent one is omitted, never null or zero."""
+        pointer = scribe_session_pointer(session_id="s1", ai_model="m1")
+        assert "recording_duration_sec" not in pointer
+
+    async def test_highlight_pointer_matches_integration_contract(self):
+        """
+        The exact shape the suite above asserts on:
+        {"source_type": "timeline_entry", "source_id": <uuid>, "span": {...}}
+        """
+        entry_id = "11111111-2222-3333-4444-555555555555"
+        pointer = timeline_entry_pointer(source_id=entry_id, span_from=0, span_to=45)
+        assert pointer["source_type"] == SOURCE_TYPE_TIMELINE_ENTRY
+        assert pointer["source_id"] == entry_id
+        assert pointer["span"] == {"from": 0, "to": 45}
+
+    async def test_every_pointer_is_discriminated_by_source_type(self):
+        """A consumer can always branch on source_type without guessing."""
+        for pointer in (
+            scribe_session_pointer(session_id="s", ai_model="m"),
+            timeline_entry_pointer(source_id="e", span_from=1, span_to=2),
+        ):
+            assert "source_type" in pointer
+            assert pointer["source_type"] in {
+                SOURCE_TYPE_SCRIBE_SESSION,
+                SOURCE_TYPE_TIMELINE_ENTRY,
+            }
+
+    async def test_invalid_span_is_rejected(self):
+        """A reversed or negative span would produce an unresolvable pointer."""
+        with pytest.raises(ValueError):
+            timeline_entry_pointer(source_id="e", span_from=50, span_to=10)
+        with pytest.raises(ValueError):
+            timeline_entry_pointer(source_id="e", span_from=-1, span_to=10)
+
+    async def test_all_three_interaction_types_map_to_valid_entry_types(self):
+        """
+        Each scribe interaction type maps to an entry_type the database CHECK
+        in 001_foundation.sql accepts.
+        """
+        allowed = {
+            "ai_doctor_consult_summary",
+            "ai_nurse_consult_summary",
+            "ai_patient_session_summary",
+        }
+        assert set(ENTRY_TYPE_BY_INTERACTION) == {
+            "doctor_consult",
+            "nurse_consult",
+            "patient_session",
+        }
+        for interaction in ENTRY_TYPE_BY_INTERACTION:
+            assert entry_type_for(interaction) in allowed
+
+    async def test_unknown_interaction_type_is_rejected(self):
+        """Fail before the write rather than on a database CHECK violation."""
+        with pytest.raises(ValueError):
+            entry_type_for("ai_physio_summary")
+
+
+class TestSpanResolution:
+    """locate_span anchors a highlight to characters in the stored entry text."""
+
+    async def test_exact_snippet_resolves(self):
+        source = "Patient reports dyspnea on exertion after climbing stairs."
+        start, end = locate_span(source, "dyspnea on exertion")
+        assert source[start:end] == "dyspnea on exertion"
+
+    async def test_case_insensitive_fallback(self):
+        source = "Patient reports Dyspnea On Exertion today."
+        start, end = locate_span(source, "dyspnea on exertion")
+        assert source[start:end].lower() == "dyspnea on exertion"
+
+    async def test_trailing_punctuation_tolerated(self):
+        """Models quote snippets with punctuation the source does not have."""
+        source = "eGFR dropped to 45 from 58 in June and warrants review"
+        start, end = locate_span(source, "eGFR dropped to 45 from 58 in June.")
+        assert start == 0
+        assert end > 12
+
+    async def test_absent_snippet_reports_unknown_rather_than_guessing(self):
+        """(0, 0) means 'span unknown' — never fabricated offsets."""
+        assert locate_span("Nothing relevant here.", "completely unrelated text") == (0, 0)
+
+    async def test_empty_inputs_are_safe(self):
+        assert locate_span("", "x") == (0, 0)
+        assert locate_span("x", "") == (0, 0)

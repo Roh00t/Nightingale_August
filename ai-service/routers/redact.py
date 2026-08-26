@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+
+from services.auth import CallerIdentity, require_caller
 
 from services.redaction import cleanup_redaction_map, redact
 
@@ -89,11 +91,15 @@ class RedactResponse(BaseModel):
         "Entities are replaced with deterministic placeholders like <PERSON_1>, <PHONE_1>."
     ),
     responses={
+        401: {"description": "Missing or invalid bearer token"},
         422: {"description": "Validation error in request body"},
         500: {"description": "Internal server error during redaction"},
     },
 )
-async def redact_text(request: RedactRequest) -> RedactResponse:
+async def redact_text(
+    request: RedactRequest,
+    caller: CallerIdentity = Depends(require_caller),
+) -> RedactResponse:
     """Redact PHI from the provided text."""
     logger.info("Redact request received, text length=%d", len(request.text))
 

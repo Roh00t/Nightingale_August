@@ -13,8 +13,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+
+from services.auth import CallerIdentity, require_caller
 
 from services.llm import generate_patient_summary
 from services.redaction import cleanup_redaction_map, de_redact, redact
@@ -75,6 +77,7 @@ class DraftPatientMessageResponse(BaseModel):
 )
 async def draft_patient_message(
     request: DraftPatientMessageRequest,
+    caller: CallerIdentity = Depends(require_caller),
 ) -> DraftPatientMessageResponse:
     logger.info(
         "Draft patient message for care_note_id=%s with %d entries",

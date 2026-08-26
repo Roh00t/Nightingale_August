@@ -13,8 +13,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+
+from services.auth import CallerIdentity, require_caller
 
 from services.llm import generate_summary
 from services.redaction import cleanup_redaction_map, de_redact, redact
@@ -96,12 +98,16 @@ class SummarizeResponse(BaseModel):
         "de-redacted result."
     ),
     responses={
+        401: {"description": "Missing or invalid bearer token"},
         422: {"description": "Validation error in request body"},
         500: {"description": "Internal server error during summarization"},
         503: {"description": "LLM service temporarily unavailable"},
     },
 )
-async def summarize(request: SummarizeRequest) -> SummarizeResponse:
+async def summarize(
+    request: SummarizeRequest,
+    caller: CallerIdentity = Depends(require_caller),
+) -> SummarizeResponse:
     """Generate a clinical summary from care note timeline entries."""
     logger.info(
         "Summarize request for care_note_id=%s with %d entries",
