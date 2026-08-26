@@ -16,40 +16,58 @@ we know if it were wrong, and what happens when it is.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Browser — Next.js 15 App Router                                         │
+│  Browser — Next.js 15 App Router                    (PWA · installable)  │
 │                                                                          │
 │   /patients/[id]  SERVER COMPONENT                                       │
-│     └─ one indexed read of care_notes.glance_cache  ──► Top Card in HTML  │
+│     └─ one indexed read of care_notes.glance_cache  ──► Top Card in HTML │
+│     └─ <SunshineBlock>   open actions · AI share · confidence · audit     │
 │     └─ <PatientWorkspace> (client)                                       │
-│          timeline · comments · highlights load separately, so history     │
+│          timeline · comments · highlights load separately, so history    │
 │          volume never blocks the card                                    │
+│     └─ <VoiceCapture>    MediaRecorder, 120s hard cap, single-flight     │
 └───────┬────────────────────┬─────────────────────────┬───────────────────┘
         │ HTTPS              │ WSS                     │ HTTPS + JWT
         ▼                    ▼                         ▼
 ┌───────────────┐   ┌──────────────────┐   ┌──────────────────────────────┐
 │   SUPABASE    │   │   HOCUSPOCUS     │   │   FASTAPI  :8000             │
 │               │   │      :1234       │   │                              │
-│ Auth (GoTrue) │   │ JWT verify       │   │  require_caller()  JWT gate  │
-│ Postgres      │   │ ROLE allowlist   │   │        │                     │
-│ ROW LEVEL     │   │  patient=REJECT  │   │        ▼                     │
-│  SECURITY ◄───┼───┤  admin=readonly  │   │  redaction.py                │
-│ 8 tables      │   │ clinic match     │   │   Presidio + spaCy + SG regex│
-│ Realtime      │   │ Yjs CRDT sync    │   │        │                     │
-└───────────────┘   │ create_note_     │   │        ▼                     │
-        ▲           │  version() —     │   │  ╔══════════════════════════╗│
-        │           │  advisory lock   │   │  ║   CLINICAL SAFETY LAYER  ║│
-        │           └────────┬─────────┘   │  ║  extraction   (verbatim) ║│
-        │                    │             │  ║  risk_rules   (floors)   ║│
-        │  service-role key  │             │  ║  confidence   (abstain)  ║│
-        └────────────────────┴─────────────┤  ║  conflict     (surface)  ║│
-           RLS bypassed — tenant and role  │  ║  patient_gate (2 gates)  ║│
-           checks re-applied in code (S3)  │  ║  feedback     (floors)   ║│
+│ Auth (GoTrue) │   │ JWT verify (JWK  │   │  require_caller()  JWT gate  │
+│ Postgres      │   │  set, by kid)    │   │        │                     │
+│ ROW LEVEL     │   │ ROLE allowlist   │   │        ▼                     │
+│  SECURITY ◄───┼───┤  patient=REJECT  │   │  transcription.py  (mock 1st)│
+│ 8 tables      │   │  admin=readonly  │   │   └─ ElevenLabs Scribe v2    │
+│ Realtime      │   │ clinic match     │   │      2 switches required     │
+└───────────────┘   │ Yjs CRDT sync    │   │        │                     │
+        ▲           │ create_note_     │   │        ▼                     │
+        │           │  version() —     │   │  redaction.py                │
+        │           │  advisory lock   │   │   Presidio + spaCy + SG regex│
+        │           └────────┬─────────┘   │        │                     │
+        │                    │             │        ▼                     │
+        │  service-role key  │             │  ╔══════════════════════════╗│
+        └────────────────────┴─────────────┤  ║   CLINICAL SAFETY LAYER  ║│
+           RLS bypassed — tenant and role  │  ║  extraction   (verbatim) ║│
+           checks re-applied in code (S3)  │  ║  risk_rules   (floors)   ║│
+                                           │  ║  confidence   (abstain)  ║│
+                                           │  ║  conflict     (surface)  ║│
+                                           │  ║  patient_gate (2 gates)  ║│
+                                           │  ║  feedback     (floors)   ║│
                                            │  ╚═══════════╤══════════════╝│
                                            │              ▼               │
                                            │        GROQ  gpt-oss-20b     │
                                            │   sees redacted text only    │
                                            └──────────────────────────────┘
 ```
+
+**Endpoints.** All `/api/ai/*` require a verified JWT and fail closed.
+
+| Path | Purpose |
+|---|---|
+| `/api/ai/summarize` | structured clinical summary |
+| `/api/ai/highlights` | risk-scored highlights, through the full safety layer |
+| `/api/ai/redact` | PHI redaction; counts only, map never leaves the server |
+| `/api/ai/scribe` | AI-scribed consult → system-authored timeline entry |
+| `/api/ai/conflicts` | cross-author clinical contradiction detection |
+| `/api/ai/transcribe` | ambient voice → diarized → redacted → structured |
 
 Four processes, one Postgres. The safety layer sits between the model and the
 record in **both** directions: text is redacted on the way out, and every claim
@@ -341,6 +359,55 @@ another clinic's scores; there is a test for exactly that.
 
 ---
 
+### 4.7 Ambient voice capture
+
+The newest surface, and the one with a cost model attached. ElevenLabs Scribe v2
+is metered against a 10,000-credit budget, so the design constraint was not
+accuracy but *making it impossible to spend credits by accident*.
+
+**Two independent switches.** A live call requires `?live=true` on the request
+**and** `ELEVENLABS_LIVE_ENABLED=true` on the deployment. One is not enough: a
+stray query parameter in a fixture, a copied curl command, or a browser retry
+would each individually be sufficient, and the failure is silent until the
+balance is gone. No test sets the environment flag, so the entire suite is
+structurally incapable of reaching the meter — asserted by a tripwire test.
+
+**The SDK is an optional dependency**, imported lazily inside the live branch
+only, so the suite runs with the package absent entirely.
+
+**Ordering carries the safety properties:**
+
+```
+MediaRecorder (120s hard cap, single-flight)
+  → size + MIME gate      413 BEFORE anything metered runs
+  → Scribe v2 (or mock)   diarized, speaker-labelled
+  → redaction.py          PHI stripped BEFORE any LLM sees the text
+  → structuring LLM       redacted dialogue only
+  → de-redact + verify    no placeholder survives into the record
+  → ai_*_summary entry    author_role='system', author_id=NULL
+```
+
+The size check runs before transcription because transcription is the metered
+step — validating afterwards would spend credits to discover the upload was
+never acceptable. The 120-second client cap and the 5 MB server cap are
+independent: the client cap is a courtesy, the server cap is the control.
+
+**Speaker labels survive redaction.** "I've been dizzy" means something
+different from the clinician than from the patient, and provenance back to a
+segment depends on the label surviving. The redactor removes names, not the
+structure of the dialogue.
+
+**One asymmetry, made deliberate.** The returned transcript is redacted; the
+returned summary is de-redacted. The summary becomes the clinical record, and a
+clinician reading `<PERSON_1>` in a note has been handed a broken record. The
+transcript is a working artefact, and there is no reason to ship identifiers
+twice in one response. Both directions are asserted by test so the asymmetry
+cannot drift into an accident.
+
+Whisper-style per-segment confidence feeds the ensemble term in §4.3, which is
+otherwise the weakest input; segment timestamps make provenance audio-anchored
+rather than text-anchored.
+
 ## 5. Performance — the ≤300ms warm glance path
 
 **Decoupling, then measurement.** The page was a client component running a
@@ -436,12 +503,21 @@ proven by test rather than by the live socket: non-destructive merge across
 sections, deterministic same-section resolution, and atomic version allocation
 under a 10-thread concurrent test.
 
-**Next, in order.** Measure the P95 against the repaired deployment. Wire the
-safety layer's outputs through the AI routers so highlights carry real
-confidence and floors end to end. Fit the confidence weights against labelled
-outcomes. Replace the medication allow-list with a clinical NER model. Then
-ambient voice capture, which is the largest remaining item in the brief and the
-first thing to cut.
+**Ambient voice is mock-first, and that is a real limitation as well as a
+guardrail.** The diarization and confidence pathways are exercised against a
+fixture, not against Scribe. The parsing is defensive on both shapes the SDK can
+return, but the live path has not been run end to end — enabling it is one
+environment variable and one `pip install`, and should be done once, on camera,
+rather than in CI.
+
+**Next, in order.** Fit the confidence weights against labelled outcomes, so
+0.50/0.35/0.15 stops being reasoned and starts being measured. Replace the
+medication allow-list with a clinical NER model. Wire `services/conflict.py`
+(edit-precedence) into the collab path, which currently has 10 passing tests and
+no caller because that path runs in TypeScript and degrades to "Local Only"
+without secrets. Then diarization quality work — overlap handling and
+code-switching — which the brief offers extra credit for and which only matters
+once live transcription is running.
 
 ---
 
