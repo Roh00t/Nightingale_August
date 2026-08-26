@@ -560,6 +560,47 @@ UNIQUE(care_note_id, version_number). changed_by may be NULL for system-authored
 snapshots -- it is a uuid FK and must never receive a sentinel string.';
 
 -- =============================================================================
+-- 6c. Role grants
+-- =============================================================================
+-- RLS decides WHICH ROWS a caller sees. Grants decide whether the caller may
+-- touch the table at all. Both are required, and RLS without grants fails
+-- closed: PostgREST returns 42501 "permission denied for table" for every
+-- request, which is what a freshly-applied schema does until this runs.
+--
+-- This block was missing from the first deployment of this file. The local test
+-- harness grants separately, so the suites passed while the deployed database
+-- was unreadable by every role. Grants belong in the migration, not in the
+-- harness, precisely so the two cannot diverge again.
+--
+-- anon deliberately receives NOTHING beyond schema usage. Every policy in this
+-- file requires auth.uid(), which is NULL for an anonymous caller, so an anon
+-- grant would widen the attack surface while granting no working access.
+-- Authentication happens in GoTrue, not PostgREST, so the login flow does not
+-- need it either.
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+
+-- authenticated: table access gated row-by-row by the policies above.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+
+-- service_role: bypasses RLS by design; used by the collab server and the AI
+-- service, both of which re-apply tenant and role checks in application code
+-- (guardrails.md S3).
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO authenticated, service_role;
+
+-- Anything created later in this schema inherits the same posture, so a new
+-- table cannot silently ship ungranted.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO authenticated, service_role;
+
+-- =============================================================================
 -- 7. Clinics
 -- =============================================================================
 
@@ -829,7 +870,7 @@ BEGIN
 
   RAISE NOTICE 'seed_demo_data: seeded both clinics';
 END;
-$$ LANGUAGE plpgsql SET search_path = public;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 COMMENT ON FUNCTION seed_demo_data(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid) IS
 'Seeds both demo clinics. All eight auth user ids are required and must already

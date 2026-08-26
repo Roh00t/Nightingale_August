@@ -45,9 +45,20 @@ _SEED_ORDER = (
     "sunrise_clinician", "sunrise_staff", "sunrise_patient", "sunrise_admin",
 )
 
-# Supabase provides auth.users and auth.uid(); 001_foundation.sql references both.
-# auth.uid() reads a GUC so a test can impersonate any user for one transaction.
+# Supabase provides auth.users, auth.uid() and the anon/authenticated/service_role
+# roles; 001_foundation.sql references all of them. They are created here for the
+# same reason: the migration is applied verbatim, so anything the real platform
+# supplies must exist before it runs.
 _AUTH_SHIM = """
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('CREATE ROLE %I NOLOGIN', r);
+    END IF;
+  END LOOP;
+END $$;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE TABLE IF NOT EXISTS auth.users (
@@ -61,16 +72,12 @@ CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
 
 # Tests must run as a NON-superuser. A superuser bypasses RLS entirely, which
 # would make every access-control assertion pass without proving anything.
+# public-schema grants now come from the migration itself (section 6c), which is
+# the point -- the harness must not paper over a grant the deployment lacks.
+# Only the auth-schema shim needs granting here, since real Supabase owns it.
 _ROLE_SETUP = """
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-    CREATE ROLE authenticated NOLOGIN;
-  END IF;
-END $$;
-GRANT USAGE ON SCHEMA public, auth TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
-GRANT SELECT ON auth.users TO authenticated;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO authenticated;
+GRANT USAGE ON SCHEMA auth TO authenticated, service_role;
+GRANT SELECT ON auth.users TO authenticated, service_role;
 """
 
 
