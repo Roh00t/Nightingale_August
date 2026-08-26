@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**184 automated tests, all runnable offline with no credentials.**
+**237 automated tests, all runnable offline with no credentials.**
 
 ---
 
@@ -296,7 +296,7 @@ Full design rationale, failure modes and measured latency are in
 ## Testing
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 184 tests
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 237 tests
 cd frontend && npx tsc --noEmit
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs                          # glance P95
@@ -313,6 +313,7 @@ node scripts/measure_glance.mjs                          # glance P95
 | `test_clinical_safety.py` | 64 | extraction, risk floors, confidence, conflicts, patient gate, feedback |
 | `test_meta_rls_sanity.py` | 3 | guards against vacuous greens |
 | `test_highlights_pipeline_safety.py` | 7 | safety layer runs inside the real `/api/ai/highlights` route |
+| `test_adversarial_safety.py` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS probes |
 
 ## Licence
 

@@ -112,14 +112,24 @@ HIGH_RULES: list[RiskRule] = [
              RiskLevel.HIGH, "Medication non-adherence"),
 ]
 
+# Potassium, however it is written.
+_POTASSIUM = _p(
+    r"\b(?:serum\s+)?(?:potassium|K\+)\s*(?:of|:|=)?\s*([0-9]+(?:\.[0-9]+)?)"
+    r"|\bK\s*(?:of|:|=)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mmol/L|mEq/L)"
+)
+
 # Numeric thresholds. A number does not drift the way an adjective does.
 # (label, regex capturing the value, comparator, bound, floor, rationale)
 VITAL_RULES: list[tuple[str, re.Pattern[str], str, float, RiskLevel, str]] = [
-    ("potassium", _p(r"\bpotassium\s*:?\s*([0-9]+(?:\.[0-9]+)?)"), ">=", 6.0,
+    # Clinical notes write potassium as "potassium", "serum potassium", "K+" or
+    # a bare "K" with units. A rule that only fires on the formal spelling is a
+    # rule that mostly does not fire. Bare "K" requires an explicit unit so it
+    # cannot collide with an initial or an abbreviation.
+    ("potassium", _POTASSIUM, ">=", 6.0,
      RiskLevel.CRITICAL, "Potassium >= 6.0 mmol/L risks arrhythmia"),
-    ("potassium_low", _p(r"\bpotassium\s*:?\s*([0-9]+(?:\.[0-9]+)?)"), "<=", 2.9,
+    ("potassium_low", _POTASSIUM, "<=", 2.9,
      RiskLevel.CRITICAL, "Potassium <= 2.9 mmol/L risks arrhythmia"),
-    ("potassium_high", _p(r"\bpotassium\s*:?\s*([0-9]+(?:\.[0-9]+)?)"), ">=", 5.0,
+    ("potassium_high", _POTASSIUM, ">=", 5.0,
      RiskLevel.HIGH, "Potassium >= 5.0 mmol/L is above range"),
     ("egfr", _p(r"\beGFR\s*(?:of|:|=|dropped\s+to|at)?\s*([0-9]+(?:\.[0-9]+)?)"), "<=", 30.0,
      RiskLevel.CRITICAL, "eGFR <= 30 indicates severe renal impairment"),
@@ -226,13 +236,14 @@ def deterministic_floor(text: str) -> tuple[RiskLevel, list[RiskRule]]:
         match = pattern.search(text)
         if not match:
             continue
+        raw = next((g for g in match.groups() if g), None)
         try:
-            value = float(match.group(1))
+            value = float(raw)
         except (TypeError, ValueError):
             continue
         if _compare(value, op, bound):
             triggered.append(
-                RiskRule(name, pattern, floor, f"{rationale} (observed {match.group(1)})")
+                RiskRule(name, pattern, floor, f"{rationale} (observed {raw})")
             )
 
     floor = max((r.floor for r in triggered), default=RiskLevel.INFO)

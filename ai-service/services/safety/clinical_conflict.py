@@ -44,6 +44,60 @@ class ConflictClass(str, Enum):
 
 _UNIT = r"(?:mg|mcg|µg|g|ml|units?|iu)"
 
+# Dosages written as words. A contradiction expressed in prose is still a
+# contradiction, and arguably a more dangerous one because it reads as
+# deliberate rather than as a typo. Comparing "one hundred mg" against "10mg"
+# as raw strings finds no conflict, so words are normalised to digits before
+# any comparison happens.
+_NUMBER_WORDS: dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_SCALE_WORDS = {"hundred": 100, "thousand": 1000}
+_ALL_NUMBER_WORDS = "|".join(sorted({*_NUMBER_WORDS, *_SCALE_WORDS}, key=len, reverse=True))
+
+
+def words_to_number(phrase: str) -> int | None:
+    """
+    Parse an English number phrase up to 9999. Returns None if unparseable.
+
+    Deliberately small in scope: clinical dosages are short phrases, and a
+    general-purpose parser would introduce failure modes of its own.
+    """
+    total = 0
+    current = 0
+    seen = False
+    for token in re.findall(r"[a-z]+", phrase.lower()):
+        if token in _NUMBER_WORDS:
+            current += _NUMBER_WORDS[token]
+            seen = True
+        elif token in _SCALE_WORDS:
+            scale = _SCALE_WORDS[token]
+            # "one hundred" -> 100; a bare "hundred" -> 100.
+            current = (current or 1) * scale
+            if scale >= 1000:
+                total += current
+                current = 0
+            seen = True
+        elif token == "and":
+            continue
+        else:
+            return None
+    return (total + current) if seen else None
+
+
+# Word-form dose: "Lisinopril one hundred mg daily".
+_DOSE_WORDS = re.compile(
+    rf"\b([A-Z][a-z]{{3,}}(?:ol|in|ide|ine|pril|artan|statin|azole|mycin|cillin|formin|pam|done))\b"
+    rf"\s*(?:at|to|-)?\s*((?:{_ALL_NUMBER_WORDS})(?:[\s-]+(?:and[\s-]+)?(?:{_ALL_NUMBER_WORDS}))*)"
+    rf"\s*({_UNIT})\b",
+    re.IGNORECASE,
+)
+
 # Dose statements: "Lisinopril 10mg", "Metformin 1000 mg BID".
 _DOSE = re.compile(
     rf"\b([A-Z][a-z]{{3,}}(?:ol|in|ide|ine|pril|artan|statin|azole|mycin|cillin|formin|pam|done))\b"
@@ -167,6 +221,25 @@ def extract_assertions(entry: dict[str, Any]) -> list[Assertion]:
         drug, amount, unit = m.group(1), m.group(2), m.group(3)
         found.append(Assertion(
             entity=drug.lower(), value=f"{amount}{unit.lower()}",
+            conflict_class=ConflictClass.DOSAGE,
+            quote=_quote_around(text, m.start(), m.end()), **common,
+        ))
+
+    # Word-form doses are normalised to the same digit representation, so a
+    # prose dosage and a numeric one compare directly.
+    for m in _DOSE_WORDS.finditer(text):
+        drug, words, unit = m.group(1), m.group(2), m.group(3)
+        value = words_to_number(words)
+        if value is None:
+            continue
+        normalised = f"{value:g}{unit.lower()}"
+        # Skip if the digit pattern already captured this exact span.
+        if any(a.entity == drug.lower() and a.value == normalised
+               and abs(len(a.quote) - len(_quote_around(text, m.start(), m.end()))) < 2
+               for a in found):
+            continue
+        found.append(Assertion(
+            entity=drug.lower(), value=normalised,
             conflict_class=ConflictClass.DOSAGE,
             quote=_quote_around(text, m.start(), m.end()), **common,
         ))

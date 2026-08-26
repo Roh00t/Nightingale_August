@@ -80,19 +80,45 @@ _MRN_REGEX = r"\bMRN[:\s#-]?\s?\d{6,10}\b"
 # "Dr. Sarah Chen", "Mdm Tan Ah Kow", "Nurse James Rivera".
 _NAME_PARTICLE = r"binte|binti|bin|a/l|a/p|s/o|d/o"
 
+# Title, then optional initials, then at least one real name token.
+# "Mr K Lim" and "Dr. J Tan" were previously missed because the name token was
+# required to be two characters or more, so a single-letter given name fell
+# through to spaCy — which caught one of them and not the other.
 _TITLE_REGEX = (
     r"\b(?:[Dd]r|[Dd]octor|[Pp]rof|[Pp]rofessor|[Nn]urse|[Ss]ister|[Mm]atron"
     r"|[Mm]r|[Mm]rs|[Mm]s|[Mm]iss|[Mm]dm|[Mm]adam)"
-    r"\.?\s+[A-Z][a-zA-Z'-]+(?:\s+(?:" + _NAME_PARTICLE + r"|[A-Z][a-zA-Z'-]+)){0,3}"
+    r"\.?\s+(?:[A-Z]\.?\s+){0,2}"
+    r"[A-Z][a-zA-Z'-]+(?:\s+(?:" + _NAME_PARTICLE + r"|[A-Z][a-zA-Z'-]+)){0,3}"
 )
 
 # Names introduced by an explicit role label, e.g. "Patient: Tan Ah Kow".
 # Anchored on the label so ordinary capitalised prose is not swept up.
+# The LABEL is matched case-insensitively via character classes while the NAME
+# stays case-sensitive. Previously the whole pattern was case-sensitive, so a
+# capitalised "Patient:" -- the way it is actually written -- never matched.
+_LABEL_WORD = (
+    r"(?:[Pp]atient|[Pp]t|[Cc]lient|[Rr]esident|[Cc]aregiver|"
+    r"[Nn]ext[- ]of[- ]kin|NOK|[Gg]uardian|[Ss]pouse|[Nn]ame)"
+)
 _LABELLED_NAME_REGEX = (
-    r"(?:\b(?:patient|pt|client|resident|caregiver|next[- ]of[- ]kin|NOK|guardian|spouse)\b"
-    r"\s*(?:name)?\s*[:\-]\s*)"
+    r"(?:\b" + _LABEL_WORD + r"\b\s*(?:[Nn]ame)?\s*[:\-]\s*)"
     r"([A-Z][a-zA-Z'-]+(?:\s+(?:" + _NAME_PARTICLE + r"|[A-Z][a-zA-Z'-]+)){0,3})"
 )
+
+# PHI inside structured payloads. A name in a JSON string value or a key=value
+# pair is still a name, but NER sees a quoted token rather than a sentence and
+# routinely misses it. Structure must not be a hiding place.
+_STRUCTURED_NAME_REGEX = (
+    r"(?:[\"']?\b\w*(?:patient|full|first|last|given|family|display|contact)?[_-]?name\w*"
+    r"[\"']?\s*[:=]\s*)"
+    r"[\"']?([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,3})[\"']?"
+)
+
+# CJK personal names. en_core_web_sm has no coverage for these at all, and in a
+# Singapore deployment they are common. A run of 2-4 CJK ideographs inside an
+# otherwise English clinical note is overwhelmingly a name; the bounded length
+# keeps this from swallowing longer Chinese prose.
+_CJK_NAME_REGEX = r"[\u4e00-\u9fff\u3040-\u30ff]{2,4}"
 
 
 # spaCy's en_core_web_sm reliably mislabels medication names as PERSON
@@ -126,6 +152,22 @@ _CLINICAL_ALLOWLIST = {
     "cardiology", "nephrology", "dietitian", "physiotherapy", "hyperkalemia",
     "dyspnea", "dyspnoea", "oedema", "edema", "systolic", "diastolic",
 }
+
+
+# Patterns whose NAME lives in capture group 1. Presidio replaces the whole
+# match, which would swallow the surrounding label ("Patient:", "name=") and
+# damage the clinical text, so these are applied here with group-scoped spans
+# instead — the label survives, only the name is replaced.
+_GROUP_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = []
+
+
+def _init_group_patterns() -> None:
+    if _GROUP_PATTERNS:
+        return
+    _GROUP_PATTERNS.extend([
+        (ENTITY_PERSON, re.compile(_LABELLED_NAME_REGEX, re.MULTILINE)),
+        (ENTITY_PERSON, re.compile(_STRUCTURED_NAME_REGEX, re.MULTILINE)),
+    ])
 
 
 def _is_clinical_term(value: str) -> bool:
@@ -182,8 +224,8 @@ def _build_analyzer():
         ),
         PatternRecognizer(
             supported_entity=ENTITY_PERSON,
-            name="labelled_name_recognizer",
-            patterns=[Pattern(name="labelled_name", regex=_LABELLED_NAME_REGEX, score=0.8)],
+            name="cjk_name_recognizer",
+            patterns=[Pattern(name="cjk_name", regex=_CJK_NAME_REGEX, score=0.7)],
             global_regex_flags=re.MULTILINE,
         ),
     ]
@@ -304,6 +346,14 @@ def redact(text: str, *, extra_names: Sequence[str] = ()) -> tuple[str, Redactio
             logger.debug("Ignoring clinical term detected as %s: %r", result.entity_type, matched)
             continue
         spans.append((result.start, result.end, result.entity_type, float(result.score)))
+
+    # Layer 2b: label- and structure-anchored names, scoped to capture group 1
+    # so the surrounding label is preserved.
+    _init_group_patterns()
+    for entity_type, pattern in _GROUP_PATTERNS:
+        for m in pattern.finditer(text):
+            if m.group(1):
+                spans.append((m.start(1), m.end(1), entity_type, 0.85))
 
     # Layer 3: caller-supplied deny-list, matched case-insensitively on word
     # boundaries. Score 1.0 so it always wins overlap resolution.

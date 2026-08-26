@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**184 automated tests, runnable offline with no credentials.**
+**237 automated tests, runnable offline with no credentials.**
 
 ---
 
@@ -438,13 +438,30 @@ node scripts/measure_glance.mjs
 | `test_clinical_safety` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
 | `test_meta_rls_sanity` | 3 | guards against a green suite that proves nothing |
 | `test_highlights_pipeline_safety` | 7 | the safety layer runs *inside the real route*, not just as modules |
+| `test_adversarial_safety` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS boundary probes |
 
 The suites build their own PostgreSQL cluster from the migration file and run as
 a non-superuser. A superuser bypasses RLS, which would make every access-control
 assertion pass while proving nothing — `test_meta_rls_sanity` exists to catch
 exactly that, by asserting the same query returns different row counts per role.
 
-**Two bugs these tests caught in my own safety code**, both of which would have
+**Adversarial evaluation found nine further defects**, every one of which would
+have shipped looking correct:
+
+| Defect | Consequence |
+|---|---|
+| `K+ 6.4` / `K 6.4 mEq/L` missed by the potassium rule | shorthand is ubiquitous, so the rule mostly did not fire |
+| Spelled-out dosages not normalised | "one hundred mg" vs "10mg" raised **no** contradiction |
+| Single-letter given name after a title | "Mr K Lim" leaked to the LLM |
+| CJK names | 陈美玲 leaked entirely — no coverage in `en_core_web_sm` |
+| Names inside JSON / key-value payloads | `{"patient_name":"Alice Wong"}` leaked |
+| Case-sensitive label matching | `Patient: Rajesh s/o Muthusamy` never matched |
+
+All are fixed, each with a regression test. Label text is now preserved around
+the redaction (group-scoped spans) so the clinical record is not damaged by the
+fix.
+
+**Two earlier bugs these tests caught in my own safety code**, both of which would have
 shipped looking correct: `\b\d+\b` does not match `100` in `100mg`, so a
 hallucinated dose passed the patient gate; and negation was checked only before a
 finding, so `"anaphylaxis ruled out"` escalated to critical.
