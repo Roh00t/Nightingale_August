@@ -210,3 +210,42 @@ npm run dev   # fix dev:ai to use .venv/bin/uvicorn first
 5. **P95 is built but unproven.** `scripts/measure_glance.mjs` signs in to Supabase to exercise
    the authenticated render path; with `.env` blank it cannot run. The number must be measured
    before the brief can state it — do not claim a figure until this executes.
+
+---
+
+## Clinical safety layer (organiser hints)
+
+Added in response to the organisers' hints. Each module answers their framing:
+what is it, how would we know if it were wrong, what happens when it is.
+
+- [x] **Extraction over generation** — `services/safety/extraction.py`. Every claim must be a
+      verbatim span of a source entry; paraphrase is rejected, not stored. Dropping a negation
+      ("not allergic" → "allergic") fails validation. Rejected claims get span (0,0), never a
+      fabricated offset. Rejection rate is observable as a drift signal.
+- [x] **Deterministic risk floors** — `services/safety/risk_rules.py`. `final = max(floor, model)`.
+      The model may raise risk, never lower it. Keyword rules + numeric thresholds + negation
+      guards in both directions. Every floor names its trigger.
+- [x] **Measured confidence + abstention** — `services/safety/confidence.py`. Score =
+      0.50×ensemble agreement + 0.35×extraction verification + 0.15×rule support. `medium` is
+      defined as 0.60–0.84, published in `BANDS`. Below 0.60 the system abstains — except for
+      critical findings, which surface flagged rather than being silently withheld.
+      Calibration via `brier_score()` / `calibration_report()`.
+- [x] **Clinical contradiction detection** — `services/safety/clinical_conflict.py`. Allergy
+      (critical) and dosage (high) contradictions across authors, with both verbatim quotes.
+      Deterministic regex, no model. Never auto-resolves. Same-author revisions and changing
+      vitals are correctly not conflicts.
+- [x] **Patient-facing firewall** — `services/safety/patient_gate.py`. Maker-checker: grounding
+      check (every dose/number/drug traces to the record), prohibited speech acts (diagnosis,
+      prognosis, stop-treatment), then named human approval by clinician/admin only. Approval
+      cannot rescue a blocked draft. Sent messages carry visible attribution.
+- [x] **Feedback loop safety** — `services/safety/feedback.py`. Critical importance floor
+      (0.90) that learned weight cannot bury; critical dismissals need a typed reason and
+      cannot be bulk-dismissed; dismissal bursts are honoured but excluded from training;
+      random audit sampling of unsurfaced items to measure false negatives (exposure bias).
+
+**64 safety tests. Suite total: 177 passing.**
+
+Bugs these tests caught in my own code, which would otherwise have shipped:
+1. `\b\d+\b` does not match "100" in "100mg" — the hallucinated-dose case passed the patient
+   gate silently. Now number+unit tokens with set membership, not substring.
+2. Negation was checked only backwards, so "anaphylaxis ruled out" escalated to critical.
