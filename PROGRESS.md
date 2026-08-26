@@ -101,7 +101,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [ ] Demo video (Scenarios A/B/C)
 
 ### 8. Bonus
-- [ ] Ambient voice capture (selected)
+- [x] Ambient voice capture — mock-first, 120s cap, 5MB limit, two-key credit guardrail, 24 tests
 - [x] Data decay — built, needs documenting
 
 ---
@@ -198,7 +198,14 @@ npm run dev   # fix dev:ai to use .venv/bin/uvicorn first
 
 ## Open risks — status as of 27 Aug 2026
 
-### 1. Time / ambient voice capture — **STILL OPEN, and the only unmet brief item**
+### 1. Ambient voice capture — **CLOSED**
+Built mock-first. `POST /api/ai/transcribe`, `VoiceCapture.tsx`, PWA manifest.
+120-second hard stop, 5MB limit enforced before anything metered runs, and live
+ElevenLabs calls gated behind TWO independent switches so no test can reach the
+meter. 24 tests, zero credits spent. The `elevenlabs` SDK is an optional extra
+imported lazily, so the suite runs with it absent.
+
+### 1b. Original risk text (superseded)
 Not implemented. No `MediaRecorder`, no PWA manifest, no transcription, no
 speaker labelling. Everything downstream of it exists — redaction,
 `/api/ai/scribe`, the three `ai_*` entry types, provenance — so it is a
@@ -281,3 +288,5 @@ that is not currently live. Stated plainly rather than presented as shipped.
 
 Clinical contradictions between authors are a different concern and **are**
 live, at `POST /api/ai/conflicts`.
+
+**Suite: 289 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).

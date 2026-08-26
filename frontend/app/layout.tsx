@@ -20,6 +20,10 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
+  // Installable on mobile so ambient capture can be used at the bedside.
+  manifest: '/manifest.json',
+  appleWebApp: { capable: true, title: 'Nightingale', statusBarStyle: 'default' },
+  icons: { icon: '/icon.svg', apple: '/icon.svg' },
   title: 'Nightingale',
   description: 'A real-time collaborative patient note system with AI-powered insights',
 };

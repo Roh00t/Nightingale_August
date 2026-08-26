@@ -20,6 +20,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Live speech-to-text. Deliberately OPTIONAL: the transcription service imports
+# the SDK lazily and defaults to a mock transcript, so the full test suite runs
+# without this installed and cannot spend ElevenLabs credits.
+voice = [
+    "elevenlabs>=1.9.0",
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

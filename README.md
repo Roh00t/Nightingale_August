@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**257 automated tests, all runnable offline with no credentials.**
+**289 automated tests, all runnable offline with no credentials.**
 
 ---
 
@@ -301,10 +301,50 @@ Browser (Next.js 15, App Router)
 Full design rationale, failure modes and measured latency are in
 [TECHNICAL_BRIEF.md](TECHNICAL_BRIEF.md).
 
+## Ambient voice capture
+
+Record a consult in the browser; the audio is transcribed with speaker labels,
+PHI is stripped, and a structured clinical summary is written back to the
+timeline as a system-authored entry.
+
+```
+MediaRecorder (120s hard cap)
+  -> POST /api/ai/transcribe        ≤5MB enforced before anything metered runs
+  -> ElevenLabs Scribe v2           diarized  — OR a deterministic mock
+  -> services/redaction.py          PHI stripped BEFORE any LLM sees the text
+  -> structuring LLM                redacted, speaker-labelled dialogue only
+  -> ai_*_consult_summary entry     author_role='system', author_id=NULL
+```
+
+**Transcription is metered, and by default this feature spends nothing.** A live
+call needs two independent switches:
+
+| Switch | Where |
+|---|---|
+| `?live=true` | on the request |
+| `ELEVENLABS_LIVE_ENABLED=true` | on the deployment |
+
+One is not enough by design — a stray query parameter in a fixture or a copied
+curl command would otherwise be sufficient to start spending credits, and the
+failure is silent until the balance is gone. With either switch off, the
+endpoint returns a deterministic mock transcript, which is what the entire test
+suite runs against.
+
+The `elevenlabs` SDK is an **optional** dependency, imported lazily inside the
+live branch only:
+
+```bash
+pip install elevenlabs        # only if you intend to enable live transcription
+```
+
+Capture mode follows the caller's role and is enforced server-side: patients may
+only produce `patient_session` captures, staff produce `nurse_consult`, and
+clinicians `doctor_consult`.
+
 ## Testing
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 257 tests
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 289 tests
 cd frontend && npx tsc --noEmit
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs                          # glance P95
@@ -323,6 +363,10 @@ node scripts/measure_glance.mjs                          # glance P95
 | `test_highlights_pipeline_safety.py` | 7 | safety layer runs inside the real `/api/ai/highlights` route |
 | `test_adversarial_safety.py` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS probes |
 | `test_conflicts_endpoint.py` | 20 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
+| `test_transcribe_endpoint.py` | 24 | ambient voice pipeline, payload limits, credit guardrails |
+
+Full per-suite documentation, including every defect these tests found, is in
+[TESTS.md](TESTS.md).
 
 ## Licence
 

@@ -1,0 +1,19 @@
+{
+  "name": "Nightingale — Shared Care Note",
+  "short_name": "Nightingale",
+  "description": "Shared longitudinal patient note with ambient consult capture.",
+  "start_url": "/patients",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#0b6b5f",
+  "categories": ["medical", "health", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -16,3 +16,10 @@ spacy>=3.8.0
 # JWT verification for AI endpoint auth
 PyJWT>=2.8.0
 cryptography>=42.0.0
+
+# Live speech-to-text (OPTIONAL).
+# services/transcription.py imports this lazily and defaults to a deterministic
+# mock, so the test suite runs without it and cannot reach the metered API.
+# Install only when ELEVENLABS_LIVE_ENABLED=true is intended:
+#   pip install elevenlabs
+# elevenlabs>=1.9.0

@@ -148,6 +148,11 @@ _CLINICAL_ALLOWLIST = {
     "amoxicillin", "augmentin", "azithromycin", "ciprofloxacin", "doxycycline",
     "atenolol", "gabapentin", "sertraline", "statin", "statins",
     # Clinical vocabulary occasionally tagged PERSON
+    # "ic" and "nric" are Singapore identity-card labels, not identifiers in
+    # themselves. Redacting the WORD destroys the sentence while protecting
+    # nothing — the number beside it is what matters, and the NRIC recogniser
+    # already removes that.
+    "ic", "nric", "fin", "mrn", "speaker",
     "creatinine", "potassium", "sodium", "glucose", "albumin", "hba1c",
     "cardiology", "nephrology", "dietitian", "physiotherapy", "hyperkalemia",
     "dyspnea", "dyspnoea", "oedema", "edema", "systolic", "diastolic",
@@ -429,8 +434,17 @@ def cleanup_redaction_map(map_id: str) -> bool:
 # corruptions, then verify nothing unknown survives.
 
 _CORRUPTION_PATTERNS = [
-    re.compile(r"[\[\(<]\s*([A-Za-z_]+?)[\s_]+(\d+)\s*[\]\)>]"),  # [Person 1] (PERSON_1) <person 1>
-    re.compile(r"\b([A-Z][A-Za-z]*?)_(\d+)\b"),                    # bare PERSON_1
+    # [Person 1] · (PERSON_1) · <person 1>
+    re.compile(r"[\[\(<]\s*([A-Za-z_]+?)[\s_]+(\d+)\s*[\]\)>]"),
+    # Bare PERSON_1, with no enclosing bracket.
+    #
+    # The lookarounds are essential. Without them this pattern also matched the
+    # PERSON_1 *inside* a well-formed <PERSON_1> and re-wrapped it, producing
+    # <<PERSON_1>> — which then de-redacted to "<Alice Wong>", putting stray
+    # angle brackets into the clinical record. The failure hit the CORRECT case:
+    # a model that followed the placeholder guard exactly had its output
+    # corrupted, while a model that mangled the syntax was repaired properly.
+    re.compile(r"(?<![<\[\(\w])([A-Z][A-Za-z]*?)_(\d+)(?![>\]\)\w])"),
 ]
 
 

@@ -247,3 +247,72 @@ def test_repair_then_restore_round_trip() -> None:
     assert "91234567" in restored
     assert assert_no_residual_placeholders(restored) == []
     cleanup_redaction_map(rmap.id)
+
+
+class TestPlaceholderRepairDoesNotCorruptCorrectOutput:
+    """
+    Regression: the repair pass used to corrupt well-formed output.
+
+    The bare-token corruption pattern also matched the `PERSON_1` *inside* an
+    already-correct `<PERSON_1>` and re-wrapped it as `<<PERSON_1>>`, which
+    de-redacted to `<Alice Wong>` — stray angle brackets in a clinical note.
+
+    The failure hit the CORRECT case: a model that followed the placeholder
+    guard exactly had its output mangled, while a model that mangled the syntax
+    was repaired properly. It affected every AI path and was invisible until an
+    end-to-end test inspected a real response body.
+    """
+
+    def test_well_formed_placeholder_is_left_alone(self):
+        text = "Alice Wong called about her results."
+        redacted, rmap = redact(text, extra_names=["Alice Wong"])
+
+        report = validate_and_repair_placeholders(f"Summary: {redacted}", rmap)
+
+        assert report.ok
+        assert report.recovered == [], "a correct placeholder was treated as corrupt"
+        assert "<<" not in report.repaired_text
+        assert ">>" not in report.repaired_text
+        assert de_redact(report.repaired_text, rmap.id) == "Summary: Alice Wong called about her results."
+        cleanup_redaction_map(rmap.id)
+
+    def test_round_trip_leaves_no_stray_brackets(self):
+        """The end state a clinician sees: clean prose, no artefacts."""
+        text = "Alice Wong, NRIC S1234567D, called 91234567 about her results."
+        redacted, rmap = redact(text, extra_names=["Alice Wong"])
+        report = validate_and_repair_placeholders(redacted, rmap)
+        restored = de_redact(report.repaired_text, rmap.id)
+
+        assert restored == text
+        for artefact in ["<<", ">>", "<Alice", "<S1234567D"]:
+            assert artefact not in restored, f"stray artefact in the record: {artefact!r}"
+        cleanup_redaction_map(rmap.id)
+
+    @pytest.mark.parametrize("corrupted", [
+        "[Person 1]", "(PERSON 1)", "<PERSON 1>", "PERSON_1", "[PERSON_1]",
+    ])
+    def test_genuinely_corrupted_placeholders_are_still_repaired(self, corrupted):
+        """The fix must not have disabled repair for output that IS mangled."""
+        rmap = _map_with(("Alice Wong", ENTITY_PERSON))
+        report = validate_and_repair_placeholders(f"The patient {corrupted} is stable.", rmap)
+        assert report.ok, f"{corrupted!r} was no longer repaired: {report.unknown}"
+        assert "<PERSON_1>" in report.repaired_text
+
+    def test_sg_identity_labels_are_not_redacted_as_people(self):
+        """
+        'IC', 'NRIC' and 'FIN' are Singapore identity-card LABELS, not
+        identifiers. Redacting the word destroys the sentence while protecting
+        nothing — the number beside it is what matters, and the NRIC recogniser
+        already removes that.
+        """
+        text = "Can you confirm your full name and IC for me?"
+        redacted, rmap = redact(text)
+        assert redacted == text
+        assert rmap.total_entities == 0
+        cleanup_redaction_map(rmap.id)
+
+        # The number beside the label is still removed.
+        redacted, rmap = redact("IC number is S1234567D.")
+        assert "S1234567D" not in redacted
+        assert "IC number is" in redacted
+        cleanup_redaction_map(rmap.id)

@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
 import { TopCard } from '@/components/glance/TopCard';
 import { SunshineBlock } from '@/components/glance/SunshineBlock';
+import { VoiceCapture } from '@/components/voice/VoiceCapture';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -390,6 +391,52 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     });
     toast.info(needsReason ? 'Deferred with reason recorded' : 'Action deferred');
   }, [highlights, logInteraction]);
+
+  /**
+   * An ambient capture becomes an AI-scribed timeline entry.
+   *
+   * author_role is 'system' and author_id is NULL — the note was produced by
+   * the scribe, not by the clinician holding the phone, and attributing it to a
+   * human would be a provenance lie. The entry type follows the capture mode,
+   * and provenance points back at the recording session.
+   */
+  const handleVoiceSummary = useCallback(async (result: {
+    summary: string;
+    entry_type: string;
+    transcription: Record<string, unknown>;
+  }) => {
+    if (!careNote || !result.summary?.trim()) return;
+
+    const { error } = await supabase.from('timeline_entries').insert({
+      care_note_id: careNote.id,
+      entry_type: result.entry_type,
+      author_role: 'system',
+      author_id: null,
+      content: {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: result.summary }] }],
+      },
+      content_text: result.summary,
+      provenance_pointer: {
+        source_type: 'scribe_session',
+        session_id: `voice-${Date.now()}`,
+        ai_model: result.transcription?.model_id ?? 'scribe_v2',
+      },
+      risk_level: 'info',
+      visibility: 'internal',
+      metadata: { capture: 'ambient_voice', ...result.transcription },
+    });
+
+    if (error) {
+      // RLS rejects author_role='system' from a user JWT by design; the AI
+      // service writes these with the service-role key. Surface it plainly
+      // rather than pretending the note was filed.
+      console.error('Could not file the ambient capture:', error);
+      toast.error('Summary produced, but it could not be filed to the timeline');
+      return;
+    }
+    toast.success('Consult summary added to the timeline');
+  }, [careNote, supabase]);
 
   const handleHighlightClick = useCallback((highlightId: string, sourceEntryId: string | null) => {
     if (!sourceEntryId) return;
@@ -1094,6 +1141,14 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             </div>
           </div>
 
+          {token && (
+            <VoiceCapture
+              token={token}
+              userRole="patient"
+              onSummary={handleVoiceSummary}
+            />
+          )}
+
           <Card className="h-fit">
             <CardContent className="pt-5 space-y-4">
               <p className="text-sm text-muted-foreground">
@@ -1404,6 +1459,17 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                 </div>
               </CardContent>
             </Card>
+
+            {/* Ambient capture — clinical view only, per the brief. */}
+            {(activeRole === 'clinician' || activeRole === 'staff') && token && (
+              <div className="sm:col-span-2">
+                <VoiceCapture
+                  token={token}
+                  userRole={activeRole}
+                  onSummary={handleVoiceSummary}
+                />
+              </div>
+            )}
 
             {/* AI Actions */}
             {(activeRole === 'clinician' || activeRole === 'staff') && (

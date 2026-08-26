@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Nightingale">
+  <rect width="512" height="512" rx="96" fill="#0b6b5f"/>
+  <path d="M112 300h72l40-96 56 152 44-104 28 48h48"
+        fill="none" stroke="#ffffff" stroke-width="28"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
