@@ -247,3 +247,27 @@
 .transition-sidebar {
   transition: width 0.2s ease, margin-left 0.2s ease;
 }
+
+/* ---------------------------------------------------------------------------
+   Provenance flash
+   ---------------------------------------------------------------------------
+   When a clinician clicks a highlight, the exact source span is emphasised for
+   a few seconds. The emphasis fades to a persistent tint rather than vanishing:
+   after the animation the clinician still needs to see WHICH words the claim
+   came from, not just that something moved.
+--------------------------------------------------------------------------- */
+@keyframes provenance-flash {
+  0%   { background-color: color-mix(in srgb, var(--color-primary) 55%, transparent); }
+  60%  { background-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+  100% { background-color: color-mix(in srgb, var(--color-primary) 22%, transparent); }
+}
+
+.provenance-flash {
+  animation: provenance-flash 2.2s ease-out forwards;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provenance-flash { animation: none; }
+}

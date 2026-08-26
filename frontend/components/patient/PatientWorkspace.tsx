@@ -49,7 +49,7 @@ interface PatientWorkspaceProps {
 
 export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspaceProps) {
   const supabase = createClient();
-  const { currentUser, setHighlightedEntryId } = useAppStore();
+  const { currentUser, setHighlightedEntryId, setHighlightedSpan } = useAppStore();
   const activeRole = (currentUser?.role || 'clinician') as UserRole;
 
   const [careNote, setCareNote] = useState<CareNote | null>(initialCareNote);
@@ -212,16 +212,37 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     };
   }, [patientId, supabase, initialCareNote]);
 
+  /**
+   * Click-to-trace. Scrolls to the source entry AND flashes the exact character
+   * span the claim came from, taken from the highlight's provenance_pointer.
+   *
+   * Navigating to the entry alone answers "which note"; the span answers "which
+   * words", which is what makes an AI claim checkable in a couple of seconds
+   * rather than requiring the clinician to re-read the whole note.
+   */
   const handleHighlightClick = useCallback((highlightId: string, sourceEntryId: string | null) => {
-    if (sourceEntryId) {
-      setHighlightedEntryId(sourceEntryId);
-      const element = document.getElementById(`entry-${sourceEntryId}`);
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-      setTimeout(() => setHighlightedEntryId(null), 4000);
-    }
-  }, [setHighlightedEntryId]);
+    if (!sourceEntryId) return;
+
+    const highlight = highlights.find((h) => h.id === highlightId);
+    const pointer = highlight?.provenance_pointer;
+    const span =
+      pointer && typeof pointer === 'object' && 'span' in pointer
+        ? (pointer as { span?: { from: number; to: number } }).span ?? null
+        : null;
+
+    setHighlightedEntryId(sourceEntryId);
+    // A zero-width span means "span unknown" — the extraction layer records
+    // (0,0) rather than fabricating offsets, so treat it as no span.
+    setHighlightedSpan(span && span.to > span.from ? span : null);
+
+    document.getElementById(`entry-${sourceEntryId}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    setTimeout(() => {
+      setHighlightedEntryId(null);
+      setHighlightedSpan(null);
+    }, 6000);
+  }, [highlights, setHighlightedEntryId, setHighlightedSpan]);
 
   const handleAcceptHighlight = useCallback(async (highlightId: string) => {
     setLoadingAction(`accept-${highlightId}`);

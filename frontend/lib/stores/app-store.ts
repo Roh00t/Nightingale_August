@@ -31,7 +31,10 @@ interface AppState {
 
   // Provenance navigation
   highlightedEntryId: string | null;
+  /** Character span to flash inside the highlighted entry, from provenance. */
+  highlightedSpan: { from: number; to: number } | null;
   setHighlightedEntryId: (id: string | null) => void;
+  setHighlightedSpan: (span: { from: number; to: number } | null) => void;
 
   // Navigation progress
   isNavigating: boolean;
@@ -68,7 +71,9 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   highlightedEntryId: null,
+  highlightedSpan: null,
   setHighlightedEntryId: (id) => set({ highlightedEntryId: id }),
+  setHighlightedSpan: (span) => set({ highlightedSpan: span }),
 
   // Navigation progress
   isNavigating: false,

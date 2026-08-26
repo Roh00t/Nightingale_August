@@ -133,6 +133,70 @@ export interface Highlight {
   created_by: string;
   created_at: string;
   expires_at: string | null;
+
+  /**
+   * Clinical safety layer output. Three DISTINCT quantities — never collapse
+   * them into one number on screen:
+   *   importance_score  workflow urgency   (queue position)
+   *   confidence_score  system reliability (how much to trust the claim)
+   *   risk_level        clinical severity  (how bad it is if true)
+   */
+  confidence_score?: number | null;
+  confidence_band?: ConfidenceBand | null;
+  /** Level the deterministic rules required, independent of the model. */
+  risk_floor?: RiskLevel | null;
+  /** Level the model proposed. final risk = max(risk_floor, model_risk). */
+  model_risk?: RiskLevel | null;
+  /** Confidence fell below the abstention threshold. */
+  abstained?: boolean;
+  safety_metadata?: SafetyMetadata | null;
+}
+
+export type ConfidenceBand = 'high' | 'medium' | 'low';
+
+/** Published numeric meaning of each band, shown to clinicians on hover. */
+export const CONFIDENCE_BANDS: Record<ConfidenceBand, string> = {
+  high: '≥ 0.85 — consistent across samples and verbatim in the record',
+  medium: '0.60–0.84 — mostly consistent; verify before acting',
+  low: '< 0.60 — withheld from the glance view; sent for manual review',
+};
+
+export interface SafetyMetadata {
+  /** Deterministic rules that set the risk floor, with their rationale. */
+  triggered_rules?: Array<{ name: string; rationale: string }>;
+  /** How the confidence score decomposed. */
+  confidence_components?: {
+    agreement?: number;
+    verification?: number;
+    rule_support?: number;
+  };
+  /** 'exact' | 'normalized' — how the quote matched its source. */
+  extraction_verdict?: string;
+  /** True when a critical finding is shown despite low confidence. */
+  unverified?: boolean;
+}
+
+/** One side of a clinical contradiction, quoted verbatim. */
+export interface ConflictClaim {
+  author_role: string;
+  author_id: string | null;
+  entry_id: string;
+  value: string;
+  quote: string;
+  timestamp?: string | null;
+}
+
+/**
+ * A detected contradiction between two authors about the same clinical fact.
+ * The system surfaces the delta and never arbitrates: it has no basis to decide
+ * which clinician is right, and choosing would manufacture false certainty.
+ */
+export interface ClinicalConflict {
+  conflict_class: 'allergy' | 'dosage' | 'medication' | 'vital';
+  entity: string;
+  severity: 'critical' | 'high';
+  requires_human_resolution: boolean;
+  claims: ConflictClaim[];
 }
 
 export interface InteractionLog {

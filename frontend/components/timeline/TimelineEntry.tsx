@@ -14,6 +14,13 @@ interface TimelineEntryProps {
   entry: TimelineEntryType;
   comments: Comment[];
   isHighlighted: boolean;
+  /**
+   * Character span within content_text to flash, from a highlight's
+   * provenance_pointer. Ringing the whole entry only tells a clinician which
+   * note; the span tells them which words, which is what "traceable to its
+   * origin" actually requires.
+   */
+  highlightedSpan?: { from: number; to: number } | null;
   userRole: UserRole;
   onAddComment: (entryId: string) => void;
   onNavigateToSource: (entryId: string) => void;
@@ -28,6 +35,7 @@ export function TimelineEntry({
   entry,
   comments,
   isHighlighted,
+  highlightedSpan = null,
   userRole,
   onAddComment,
   onNavigateToSource,
@@ -161,7 +169,7 @@ export function TimelineEntry({
             {isLabResult ? (
               <LabResultsDisplay content={entry.content as unknown as LabResultContent} metadata={entry.metadata} />
             ) : entry.content_text ? (
-              <p>{entry.content_text}</p>
+              <p><SpanHighlightedText text={entry.content_text} span={isHighlighted ? highlightedSpan : null} /></p>
             ) : (
               <p className="italic text-muted-foreground">No text content</p>
             )}
@@ -341,5 +349,45 @@ function LabResultsDisplay({ content, metadata }: { content: LabResultContent; m
         </p>
       ) : null}
     </div>
+  );
+}
+
+
+/**
+ * Renders text with one character span visually flashed.
+ *
+ * Offsets come from a highlight's provenance_pointer and address the STORED
+ * text, which is why the extraction layer records the source form of a quote
+ * rather than the model's wording — otherwise these offsets would drift.
+ *
+ * A span that does not fit the text is ignored rather than clamped: a wrong
+ * span points a clinician at words that do not support the claim, which is
+ * worse than showing no emphasis at all.
+ */
+function SpanHighlightedText({
+  text,
+  span,
+}: {
+  text: string;
+  span?: { from: number; to: number } | null;
+}) {
+  const valid =
+    span &&
+    Number.isFinite(span.from) &&
+    Number.isFinite(span.to) &&
+    span.from >= 0 &&
+    span.to > span.from &&
+    span.to <= text.length;
+
+  if (!valid) return <>{text}</>;
+
+  return (
+    <>
+      {text.slice(0, span!.from)}
+      <mark className="provenance-flash rounded px-0.5 bg-primary/25 text-foreground">
+        {text.slice(span!.from, span!.to)}
+      </mark>
+      {text.slice(span!.to)}
+    </>
   );
 }

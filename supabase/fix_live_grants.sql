@@ -29,6 +29,31 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- depend on the caller's grants.
 ALTER FUNCTION seed_demo_data(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid) SECURITY DEFINER;
 
+-- ---------------------------------------------------------------------------
+-- Clinical safety columns on highlights (additive; safe on a live database).
+-- importance / confidence / risk are three different quantities and are stored
+-- separately so the UI cannot render one as another.
+-- ---------------------------------------------------------------------------
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS confidence_score float;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS confidence_band  text;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS risk_floor       text;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS model_risk       text;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS abstained        boolean NOT NULL DEFAULT false;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS safety_metadata  jsonb DEFAULT '{}';
+
+DO $$ BEGIN
+  ALTER TABLE highlights ADD CONSTRAINT highlights_confidence_score_check
+    CHECK (confidence_score IS NULL OR (confidence_score >= 0.0 AND confidence_score <= 1.0));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE highlights ADD CONSTRAINT highlights_confidence_band_check
+    CHECK (confidence_band IS NULL OR confidence_band IN ('high','medium','low'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE INDEX IF NOT EXISTS idx_highlights_surfaced
+  ON highlights(care_note_id, abstained, importance_score DESC);
+
 -- Verify: should return 8 rows, one per table.
 SELECT table_name,
        has_table_privilege('authenticated', 'public.' || table_name, 'SELECT') AS authenticated_select,

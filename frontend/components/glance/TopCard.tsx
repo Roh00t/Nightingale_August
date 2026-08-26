@@ -3,6 +3,13 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { ConfidenceBadge } from '@/components/ui/confidence-badge';
+import { ConflictSummaryBadge } from '@/components/ui/conflict-badge';
+
+/** Ordinal ranking, so a floor can be compared against a model proposal. */
+const RISK_ORDER: Record<string, number> = {
+  info: 0, low: 1, medium: 2, high: 3, critical: 4,
+};
 import { Button } from '@/components/ui/button';
 import { TrustBadge } from '@/components/ui/trust-badge';
 import { getRiskColor, getConfidenceLabel } from '@/lib/utils';
@@ -39,6 +46,8 @@ interface TopCardProps {
   onToggleCarePlanItem?: (index: number) => void;
   conflictCount?: number;
   onReviewConflicts?: () => void;
+  /** Raises the chip to critical styling when an allergy conflict is present. */
+  hasCriticalConflict?: boolean;
 }
 
 const changeIcons: Record<string, React.ElementType> = {
@@ -69,6 +78,7 @@ export function TopCard({
   onToggleCarePlanItem,
   conflictCount = 0,
   onReviewConflicts,
+  hasCriticalConflict = false,
 }: TopCardProps) {
   const topHighlights = [...highlights]
     .filter((h) => h.is_accepted !== false)
@@ -132,6 +142,18 @@ export function TopCard({
         </CardHeader>
 
         <CardContent className="space-y-3 px-3 sm:px-6">
+      {/* Unresolved contradictions rank above individual highlights: a
+          disagreement about a dose is more urgent than any single observation. */}
+      {conflictCount > 0 && (
+        <div className="mb-3">
+          <ConflictSummaryBadge
+            count={conflictCount}
+            hasCritical={hasCriticalConflict}
+            onClick={onReviewConflicts}
+          />
+        </div>
+      )}
+
           {topHighlights.map((highlight) => (
             <HighlightItem
               key={highlight.id}
@@ -259,9 +281,19 @@ function HighlightItem({
   const isInfoLevel = highlight.risk_level === 'info' || highlight.risk_level === 'low';
   const isAcceptedInfoLevel = highlight.is_accepted === true && isInfoLevel;
 
+  // Confidence is deliberately NOT passed here. TrustBadge's `confidence` field
+  // used to receive importance_score, which renders queue position as if it
+  // were reliability — the exact failure that makes a trust signal meaningless.
+  // Measured confidence is shown separately by <ConfidenceBadge>.
   const badgeType = isAI
-    ? { type: 'ai_generated' as const, label: 'AI', confidence: highlight.importance_score }
+    ? { type: 'ai_generated' as const, label: 'AI' }
     : { type: 'clinician_verified' as const, label: 'Manual' };
+
+  // True when the deterministic rules, not the model, set this level.
+  const floorApplied =
+    !!highlight.risk_floor &&
+    !!highlight.model_risk &&
+    RISK_ORDER[highlight.risk_floor] > RISK_ORDER[highlight.model_risk];
 
   // Collapsed view for accepted INFO/LOW highlights
   if (isAcceptedInfoLevel) {
@@ -356,6 +388,33 @@ function HighlightItem({
         </div>
         <p className="text-sm font-medium leading-snug break-words">{highlight.content_snippet}</p>
         <p className="text-xs text-muted-foreground mt-1 break-words">{highlight.risk_reason}</p>
+
+        {/* Progressive trust disclosure: severity, reliability and the reason
+            the level was set are three separate signals, shown as three. */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+          <ConfidenceBadge
+            score={highlight.confidence_score}
+            band={highlight.confidence_band}
+            abstained={highlight.abstained}
+            metadata={highlight.safety_metadata}
+            unverified={highlight.safety_metadata?.unverified}
+          />
+          {floorApplied && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-blue-200/80 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700"
+              title={
+                `Raised from '${highlight.model_risk}' to '${highlight.risk_floor}' by a ` +
+                `deterministic rule: ` +
+                (highlight.safety_metadata?.triggered_rules ?? [])
+                  .map((r) => r.rationale)
+                  .join('; ') +
+                `. The model can raise risk but never lower it.`
+              }
+            >
+              Rule floor
+            </span>
+          )}
+        </div>
       </div>
 
       {showActions && (

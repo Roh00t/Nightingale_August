@@ -34,7 +34,7 @@ export function TimelineView({
   onResolveComment,
   clinicMembers = [],
 }: TimelineViewProps) {
-  const { highlightedEntryId, timelineFilters, setTimelineFilters } = useAppStore();
+  const { highlightedEntryId, highlightedSpan, timelineFilters, setTimelineFilters } = useAppStore();
   const [showFilters, setShowFilters] = useState(false);
 
   const toggleRole = useCallback((role: string) => {
@@ -163,6 +163,7 @@ export function TimelineView({
                 entry={entry}
                 comments={commentsByEntry.get(entry.id) || []}
                 isHighlighted={entry.id === highlightedEntryId}
+                highlightedSpan={entry.id === highlightedEntryId ? highlightedSpan : null}
                 userRole={userRole}
                 onAddComment={onAddComment}
                 onNavigateToSource={onNavigateToSource}

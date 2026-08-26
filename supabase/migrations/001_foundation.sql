@@ -145,8 +145,36 @@ CREATE TABLE highlights (
   is_pinned           boolean DEFAULT false,
   created_by          text NOT NULL DEFAULT 'system',
   created_at          timestamptz DEFAULT now(),
-  expires_at          timestamptz
+  expires_at          timestamptz,
+
+  -- Clinical safety layer (services/safety/*). These are separate quantities
+  -- and are deliberately NOT collapsed into one number on screen:
+  --   importance_score  workflow urgency   -- where it sits in the queue
+  --   confidence_score  system reliability -- how much to trust the claim
+  --   risk_level        clinical severity  -- how bad it is if true
+  -- Rendering importance as confidence is the "decoration" failure: it looks
+  -- like a trust signal while measuring queue position.
+  confidence_score    float CHECK (confidence_score IS NULL
+                                   OR (confidence_score >= 0.0 AND confidence_score <= 1.0)),
+  confidence_band     text CHECK (confidence_band IS NULL
+                                  OR confidence_band IN ('high', 'medium', 'low')),
+  -- What the deterministic rules required, and what the model proposed, kept
+  -- apart so a badge can always show which one set the level.
+  risk_floor          text CHECK (risk_floor IS NULL
+                                  OR risk_floor IN ('critical','high','medium','low','info')),
+  model_risk          text CHECK (model_risk IS NULL
+                                  OR model_risk IN ('critical','high','medium','low','info')),
+  -- True when confidence fell below the abstention threshold. An abstained
+  -- highlight is withheld from the glance view unless it is critical.
+  abstained           boolean NOT NULL DEFAULT false,
+  -- Triggered rules, confidence components, extraction verdict. Never note text.
+  safety_metadata     jsonb DEFAULT '{}'
 );
+
+-- The glance view reads only what it will display: unabstained highlights in
+-- importance order.
+CREATE INDEX idx_highlights_surfaced
+  ON highlights(care_note_id, abstained, importance_score DESC);
 
 CREATE INDEX idx_highlights_care_note ON highlights(care_note_id, importance_score DESC);
 CREATE INDEX idx_highlights_source    ON highlights(source_entry_id);
