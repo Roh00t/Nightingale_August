@@ -43,7 +43,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 ### 1. Shared "Care Note"
 - [x] Unified single page per patient
 - [x] Top/Glance card: content, open actions, critical risk flags
-- [ ] **Glance readable+actionable <10s AND P95 ≤300ms warm** ← unmet, scored
+- [~] **Glance P95 ≤300ms** — SSR path built (route now `ƒ` dynamic, single indexed read); **measurement blocked on Supabase credentials**
 - [x] Longitudinal timeline, time-ordered continuous feed
 - [x] Entry types: patient/AI session summaries, AI-scribed consults, staff edits, clinician edits, system events
 - [x] Per-entry metadata: `author_role`, `author_id`, `timestamp`, `type`, `provenance_pointer`
@@ -130,7 +130,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 
 **Exit:** all 5 suites green with pasted output, on a machine with no credentials.
 
-### Phase 4 — Glance View P95
+### Phase 4 — Glance View P95 🔶 BUILT, UNMEASURED
 - Convert `frontend/app/(dashboard)/patients/[id]/page.tsx` to a server component performing
   one indexed read of `care_notes.glance_cache`. Timeline, comments and highlights move to a
   separate streamed boundary (`<Suspense>`), so the card is not blocked by history reads.
@@ -207,3 +207,6 @@ npm run dev   # fix dev:ai to use .venv/bin/uvicorn first
    Gated behind clinician/admin auth so not a bypass, but should be closed before submission.
 4. **Demo video** needs a working end-to-end stack, which needs real Supabase credentials for
    the hosted demo. Local Postgres covers tests but not the recorded demo.
+5. **P95 is built but unproven.** `scripts/measure_glance.mjs` signs in to Supabase to exercise
+   the authenticated render path; with `.env` blank it cannot run. The number must be measured
+   before the brief can state it — do not claim a figure until this executes.
