@@ -1,0 +1,24 @@
+{
+  "name": "nightingale-collab-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hocuspocus collaboration server for Nightingale real-time note editing",
+  "main": "index.ts",
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "^2.13.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "dotenv": "^16.4.7",
+    "jsonwebtoken": "^9.0.2",
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

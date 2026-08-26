@@ -1,0 +1,25 @@
+{
+  "name": "nightingale",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared Longitudinal Patient Note System",
+  "workspaces": [
+    "frontend",
+    "collab-server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:collab\" \"npm run dev:ai\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:collab": "cd collab-server && npx tsx index.ts",
+    "dev:ai": "cd ai-service && uvicorn main:app --reload --port 8000",
+    "test": "cd ai-service && pytest tests/ -v",
+    "test:frontend": "cd frontend && npx vitest run",
+    "build": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "dependencies": {
+    "supabase": "^2.76.2"
+  }
+}

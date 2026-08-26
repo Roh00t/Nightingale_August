@@ -1,0 +1,218 @@
+ATTRIBUTION
+===========
+
+Nightingale — Shared Longitudinal Patient Note System
+
+The following open-source libraries and tools are used in this project:
+
+
+FRONTEND DEPENDENCIES
+---------------------
+
+next (15.x)
+  License: MIT
+  Copyright: Vercel, Inc.
+  URL: https://github.com/vercel/next.js
+
+react, react-dom (19.x)
+  License: MIT
+  Copyright: Meta Platforms, Inc.
+  URL: https://github.com/facebook/react
+
+@tiptap/react, @tiptap/starter-kit, @tiptap/extension-collaboration,
+@tiptap/extension-collaboration-cursor, @tiptap/extension-highlight,
+@tiptap/extension-mention, @tiptap/extension-placeholder, @tiptap/pm (2.x)
+  License: MIT
+  Copyright: Tiptap GmbH
+  URL: https://github.com/ueberdosis/tiptap
+
+yjs (13.x)
+  License: MIT
+  Copyright: Kevin Jahns
+  URL: https://github.com/yjs/yjs
+
+@hocuspocus/provider (2.x)
+  License: MIT
+  Copyright: Tiptap GmbH
+  URL: https://github.com/ueberdosis/hocuspocus
+
+@supabase/supabase-js, @supabase/ssr (2.x)
+  License: MIT
+  Copyright: Supabase Inc.
+  URL: https://github.com/supabase/supabase-js
+
+@tanstack/react-query (5.x)
+  License: MIT
+  Copyright: Tanner Linsley
+  URL: https://github.com/TanStack/query
+
+zustand (5.x)
+  License: MIT
+  Copyright: Paul Henschel
+  URL: https://github.com/pmndrs/zustand
+
+tailwindcss (4.x)
+  License: MIT
+  Copyright: Tailwind Labs, Inc.
+  URL: https://github.com/tailwindlabs/tailwindcss
+
+class-variance-authority (0.7.x)
+  License: Apache-2.0
+  Copyright: Joe Bell
+  URL: https://github.com/joe-bell/cva
+
+clsx (2.x)
+  License: MIT
+  Copyright: Luke Edwards
+  URL: https://github.com/lukeed/clsx
+
+tailwind-merge (2.x)
+  License: MIT
+  Copyright: Dany Castillo
+  URL: https://github.com/dcastil/tailwind-merge
+
+lucide-react (0.4x)
+  License: ISC
+  Copyright: Lucide Contributors
+  URL: https://github.com/lucide-icons/lucide
+
+@radix-ui/react-* (various)
+  License: MIT
+  Copyright: WorkOS
+  URL: https://github.com/radix-ui/primitives
+
+date-fns (4.x)
+  License: MIT
+  Copyright: Sasha Koss
+  URL: https://github.com/date-fns/date-fns
+
+sonner (1.x)
+  License: MIT
+  Copyright: Emil Kowalski
+  URL: https://github.com/emilkowalski/sonner
+
+diff (7.x)
+  License: BSD-3-Clause
+  Copyright: Kevin Decker
+  URL: https://github.com/kpdecker/jsdiff
+  Note: Used for computing line-by-line diffs in the save confirmation dialog
+
+
+COLLABORATION SERVER DEPENDENCIES
+----------------------------------
+
+@hocuspocus/server (2.x)
+  License: MIT
+  Copyright: Tiptap GmbH
+  URL: https://github.com/ueberdosis/hocuspocus
+
+jsonwebtoken (9.x)
+  License: MIT
+  Copyright: Auth0, Inc.
+  URL: https://github.com/auth0/node-jsonwebtoken
+
+tsx (4.x)
+  License: MIT
+  Copyright: Hiroki Osame
+  URL: https://github.com/privatenumber/tsx
+
+
+AI SERVICE DEPENDENCIES
+-----------------------
+
+fastapi (0.11x)
+  License: MIT
+  Copyright: Sebastian Ramirez
+  URL: https://github.com/tiangolo/fastapi
+
+uvicorn (0.3x)
+  License: BSD-3-Clause
+  Copyright: Encode OSS Ltd
+  URL: https://github.com/encode/uvicorn
+
+presidio-analyzer, presidio-anonymizer (2.x)
+  License: MIT
+  Copyright: Microsoft Corporation
+  URL: https://github.com/microsoft/presidio
+
+spacy (3.x)
+  License: MIT
+  Copyright: Explosion AI
+  URL: https://github.com/explosion/spaCy
+
+groq (Python SDK)
+  License: Apache-2.0
+  Copyright: Groq, Inc.
+  URL: https://github.com/groq/groq-python
+
+supabase-py (2.x)
+  License: MIT
+  Copyright: Supabase Inc.
+  URL: https://github.com/supabase-community/supabase-py
+
+pydantic (2.x)
+  License: MIT
+  Copyright: Samuel Colvin
+  URL: https://github.com/pydantic/pydantic
+
+httpx (0.2x)
+  License: BSD-3-Clause
+  Copyright: Encode OSS Ltd
+  URL: https://github.com/encode/httpx
+
+pytest (8.x)
+  License: MIT
+  Copyright: Holger Krekel and pytest contributors
+  URL: https://github.com/pytest-dev/pytest
+
+pytest-asyncio (0.2x)
+  License: Apache-2.0
+  Copyright: Tin Tvrtkovic
+  URL: https://github.com/pytest-dev/pytest-asyncio
+
+
+INFRASTRUCTURE
+--------------
+
+Supabase (Cloud)
+  License: Apache-2.0
+  Copyright: Supabase Inc.
+  URL: https://github.com/supabase/supabase
+
+PostgreSQL (15.x)
+  License: PostgreSQL License (MIT-like)
+  Copyright: PostgreSQL Global Development Group
+  URL: https://www.postgresql.org/
+
+
+AI MODELS
+---------
+
+GPT-OSS-20B (via Groq API)
+  License: Apache-2.0
+  Copyright: OpenAI
+  URL: https://huggingface.co/openai/gpt-oss-20b
+
+
+DESIGN SYSTEM
+-------------
+
+shadcn/ui (component patterns)
+  License: MIT
+  Copyright: shadcn
+  URL: https://github.com/shadcn-ui/ui
+  Note: Components adapted/copied per shadcn/ui's copy-paste model
+
+
+BUILD TOOLS
+-----------
+
+concurrently (9.x)
+  License: MIT
+  Copyright: Kimmo Brunfeldt
+  URL: https://github.com/open-cli-tools/concurrently
+
+typescript (5.x)
+  License: Apache-2.0
+  Copyright: Microsoft Corporation
+  URL: https://github.com/microsoft/TypeScript
