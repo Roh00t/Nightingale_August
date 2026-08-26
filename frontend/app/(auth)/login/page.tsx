@@ -64,6 +64,14 @@ const clinics: Clinic[] = [
         description: 'Read-only oversight, audit logging access',
         icon: Shield,
       },
+      {
+        email: 'patient@nightingale.demo',
+        password: 'demo-password-123',
+        role: 'patient',
+        name: 'Alice Wong',
+        description: 'Own care instructions and messaging only',
+        icon: Users,
+      },
     ],
   },
   {
@@ -72,28 +80,36 @@ const clinics: Clinic[] = [
     shortName: 'Sunrise',
     accounts: [
       {
-        email: 'clinician2@nightingale.demo',
+        email: 'dr.miller@sunrise.demo',
         password: 'demo-password-123',
         role: 'clinician',
-        name: 'Dr. Michael Park',
+        name: 'Dr. James Miller',
         description: 'Full editor access, AI highlights, clinical decisions',
         icon: Stethoscope,
       },
       {
-        email: 'staff2@nightingale.demo',
+        email: 'emma.wilson@sunrise.demo',
         password: 'demo-password-123',
         role: 'staff',
-        name: 'Nurse Emily Torres',
+        name: 'Emma Wilson',
         description: 'Staff notes, vitals tracking, compliance view',
         icon: ClipboardList,
       },
       {
-        email: 'admin2@nightingale.demo',
+        email: 'michael.brown@sunrise.demo',
         password: 'demo-password-123',
         role: 'admin',
-        name: 'David Kim',
+        name: 'Michael Brown',
         description: 'Read-only oversight, audit logging access',
         icon: Shield,
+      },
+      {
+        email: 'robert.lee@sunrise.demo',
+        password: 'demo-password-123',
+        role: 'patient',
+        name: 'Robert Lee',
+        description: 'Own care instructions and messaging only',
+        icon: Users,
       },
     ],
   },
@@ -104,7 +120,6 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [patientName, setPatientName] = useState('');
   const [showManual, setShowManual] = useState(false);
   const [selectedClinicIndex, setSelectedClinicIndex] = useState(0);
   const router = useRouter();
@@ -152,42 +167,6 @@ export default function LoginPage() {
     }
   }
 
-  async function handlePatientLogin(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const fullName = patientName.trim();
-    if (!fullName || loading) return;
-
-    startNavigation();
-    setLoading('patient');
-    setError(null);
-
-    try {
-      const res = await fetch('/api/auth/patient-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ full_name: fullName }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.error || 'Unable to find that patient');
-      }
-
-      const data = await res.json();
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: data.email,
-        password: 'demo-password-123',
-      });
-      if (signInError) throw signInError;
-
-      router.push('/patients');
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Patient login failed';
-      setError(message);
-    } finally {
-      setLoading(null);
-    }
-  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -297,41 +276,6 @@ export default function LoginPage() {
                 );
               })}
             </div>
-          </div>
-
-          {/* Patient quick login */}
-          <div className="space-y-4">
-            <p className="text-center text-sm font-medium text-muted-foreground">
-              Patient view &mdash; enter your full name
-            </p>
-            <form onSubmit={handlePatientLogin} className="max-w-sm mx-auto space-y-3">
-              <div>
-                <label htmlFor="patient-name" className="text-sm font-medium text-foreground">
-                  Full name
-                </label>
-                <input
-                  id="patient-name"
-                  type="text"
-                  value={patientName}
-                  onChange={(e) => setPatientName(e.target.value)}
-                  className="w-full mt-1.5 px-4 py-2.5 bg-secondary/50 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
-                  placeholder="Alice Wong or Bob Martinez"
-                />
-              </div>
-              <Button type="submit" className="w-full h-11" disabled={loading !== null || !patientName.trim()}>
-                {loading === 'patient' ? (
-                  <span className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Signing in...
-                  </span>
-                ) : (
-                  'Continue as Patient'
-                )}
-              </Button>
-              <p className="text-xs text-muted-foreground text-center">
-                Patients from any clinic can log in with their full name.
-              </p>
-            </form>
           </div>
 
           {/* Divider */}

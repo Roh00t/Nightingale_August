@@ -39,17 +39,62 @@ export function parseCareNoteId(documentName: string): string {
 }
 
 // ----------------------------------------------------------------
-// Clinic scope verification
+// Role + clinic scope verification
 // ----------------------------------------------------------------
 
 /**
- * Verify the user belongs to the same clinic as the care note.
- * Throws if the user's `clinic_id` does not match.
+ * Roles permitted to open a care-note document over the WebSocket, and the
+ * access mode each one gets.
+ *
+ * `patient` is absent by design. This path uses the service-role Supabase
+ * client, which bypasses RLS entirely, so none of the patient restrictions
+ * enforced in 001_foundation.sql apply here. Before this allowlist existed the
+ * only check was clinic membership, which meant any authenticated patient could
+ * connect to `care-note:{any_uuid}` in their own clinic and read and write the
+ * full internal note. See guardrails.md S2 and S3.
+ */
+const COLLAB_WRITE_ROLES = ["clinician", "staff"] as const;
+const COLLAB_READ_ONLY_ROLES = ["admin"] as const;
+
+export type CollabAccessMode = "write" | "read-only";
+
+/** Result of a successful authorization check. */
+export interface CareNoteAccess {
+  careNote: CareNoteRow;
+  mode: CollabAccessMode;
+}
+
+/**
+ * Resolve the access mode for a role, or throw if the role has no collaborative
+ * access at all. Rejection is explicit rather than a fall-through default.
+ */
+export function resolveCollabAccessMode(
+  role: UserProfile["role"]
+): CollabAccessMode {
+  if ((COLLAB_WRITE_ROLES as readonly string[]).includes(role)) {
+    return "write";
+  }
+  if ((COLLAB_READ_ONLY_ROLES as readonly string[]).includes(role)) {
+    return "read-only";
+  }
+  throw new Error(
+    `Access denied: role "${role}" may not open care note documents`
+  );
+}
+
+/**
+ * Authorize a connection: the user's role must permit collaborative access AND
+ * the care note must belong to the user's clinic. Both conditions are required
+ * — neither is sufficient alone.
  */
 export async function verifyCareNoteClinicScope(
   careNoteId: string,
   userProfile: UserProfile
-): Promise<CareNoteRow> {
+): Promise<CareNoteAccess> {
+  // Role first: a patient is rejected before any record is fetched, so an
+  // unauthorized role cannot probe for the existence of a care note id.
+  const mode = resolveCollabAccessMode(userProfile.role);
+
   const supabase = getSupabaseAdmin();
 
   const { data, error } = await supabase
@@ -72,7 +117,7 @@ export async function verifyCareNoteClinicScope(
     );
   }
 
-  return row;
+  return { careNote: row, mode };
 }
 
 // ----------------------------------------------------------------

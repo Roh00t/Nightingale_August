@@ -9,6 +9,7 @@ import {
 import {
   parseCareNoteId,
   verifyCareNoteClinicScope,
+  type CollabAccessMode,
   loadYjsState,
   saveYjsState,
   createNoteVersion,
@@ -32,6 +33,8 @@ const VERSION_DEBOUNCE_MS = 30_000; // 30 seconds
 interface ConnectionContext {
   user: UserProfile;
   careNoteId: string;
+  /** Access mode granted by role. Admins connect read-only. */
+  mode: CollabAccessMode;
 }
 
 // ----------------------------------------------------------------
@@ -61,7 +64,7 @@ const server = new Hocuspocus({
   // ------------------------------------------------------------------
 
   async onAuthenticate(data) {
-    const { token, documentName } = data;
+    const { token, documentName, connection } = data;
 
     // 1. Verify JWT and fetch user profile
     if (!token) {
@@ -73,15 +76,25 @@ const server = new Hocuspocus({
     // 2. Parse the care note ID from the document name
     const careNoteId = parseCareNoteId(documentName);
 
-    // 3. Verify clinic scope -- user must belong to same clinic
-    await verifyCareNoteClinicScope(careNoteId, user);
+    // 3. Authorize: role allowlist AND clinic match. Throwing here rejects the
+    //    WebSocket connection. Patients never reach this point — the role check
+    //    inside verifyCareNoteClinicScope rejects them before the care note is
+    //    even looked up.
+    const { mode } = await verifyCareNoteClinicScope(careNoteId, user);
+
+    // 4. Admins get oversight, not edit rights. Hocuspocus enforces this at the
+    //    protocol level: a read-only connection's updates are not applied or
+    //    broadcast, so this cannot be bypassed by a modified client.
+    if (mode === "read-only") {
+      connection.readOnly = true;
+    }
 
     console.log(
-      `[auth] User ${user.display_name} (${user.role}) authenticated for ${documentName}`
+      `[auth] ${user.display_name} (${user.role}) authenticated for ${documentName} [${mode}]`
     );
 
-    // 4. Return context that will be available in subsequent hooks
-    const context: ConnectionContext = { user, careNoteId };
+    // 5. Return context that will be available in subsequent hooks
+    const context: ConnectionContext = { user, careNoteId, mode };
     return context;
   },
 

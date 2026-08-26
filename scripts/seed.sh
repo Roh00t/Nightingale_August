@@ -88,6 +88,7 @@ fi
 
 echo "Creating/finding demo users..."
 
+echo "Nightingale Family Clinic:"
 CLINICIAN_ID=$(get_or_create_user "clinician@nightingale.demo" "demo-password-123")
 echo "  Clinician (Dr. Sarah Chen): $CLINICIAN_ID"
 
@@ -100,13 +101,30 @@ echo "  Patient (Alice Wong): $PATIENT_ID"
 ADMIN_ID=$(get_or_create_user "admin@nightingale.demo" "demo-password-123")
 echo "  Admin (Maria Santos): $ADMIN_ID"
 
-if [ -z "$CLINICIAN_ID" ] || [ -z "$STAFF_ID" ] || [ -z "$PATIENT_ID" ] || [ -z "$ADMIN_ID" ]; then
+echo "Sunrise Medical Center:"
+S_CLINICIAN_ID=$(get_or_create_user "dr.miller@sunrise.demo" "demo-password-123")
+echo "  Clinician (Dr. James Miller): $S_CLINICIAN_ID"
+
+S_STAFF_ID=$(get_or_create_user "emma.wilson@sunrise.demo" "demo-password-123")
+echo "  Staff (Emma Wilson): $S_STAFF_ID"
+
+S_PATIENT_ID=$(get_or_create_user "robert.lee@sunrise.demo" "demo-password-123")
+echo "  Patient (Robert Lee): $S_PATIENT_ID"
+
+S_ADMIN_ID=$(get_or_create_user "michael.brown@sunrise.demo" "demo-password-123")
+echo "  Admin (Michael Brown): $S_ADMIN_ID"
+
+# All eight ids are required: seed_demo_data takes no defaults, because
+# profiles.id references auth.users and a generated uuid would violate the FK.
+MISSING=""
+for pair in "CLINICIAN_ID:$CLINICIAN_ID" "STAFF_ID:$STAFF_ID" "PATIENT_ID:$PATIENT_ID" "ADMIN_ID:$ADMIN_ID" \
+            "S_CLINICIAN_ID:$S_CLINICIAN_ID" "S_STAFF_ID:$S_STAFF_ID" "S_PATIENT_ID:$S_PATIENT_ID" "S_ADMIN_ID:$S_ADMIN_ID"; do
+  name="${pair%%:*}"; val="${pair#*:}"
+  [ -z "$val" ] && MISSING="$MISSING $name"
+done
+if [ -n "$MISSING" ]; then
   echo ""
-  echo "ERROR: One or more users failed to resolve. Check output above."
-  echo "  CLINICIAN_ID=$CLINICIAN_ID"
-  echo "  STAFF_ID=$STAFF_ID"
-  echo "  PATIENT_ID=$PATIENT_ID"
-  echo "  ADMIN_ID=$ADMIN_ID"
+  echo "ERROR: these users failed to resolve:$MISSING"
   exit 1
 fi
 
@@ -114,22 +132,34 @@ echo ""
 echo "Seeding database..."
 
 # Call the seed function via Supabase REST RPC
+# Argument names carry a p_ prefix (they would otherwise shadow column names
+# inside the function body).
 SEED_RESULT=$(curl -s "$URL/rest/v1/rpc/seed_demo_data" \
   -H "apikey: $KEY" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d "{
-    \"clinician_id\": \"$CLINICIAN_ID\",
-    \"staff_id\": \"$STAFF_ID\",
-    \"patient_id\": \"$PATIENT_ID\",
-    \"admin_id\": \"$ADMIN_ID\"
+    \"p_clinician_id\": \"$CLINICIAN_ID\",
+    \"p_staff_id\": \"$STAFF_ID\",
+    \"p_patient_id\": \"$PATIENT_ID\",
+    \"p_admin_id\": \"$ADMIN_ID\",
+    \"p_sunrise_clinician_id\": \"$S_CLINICIAN_ID\",
+    \"p_sunrise_staff_id\": \"$S_STAFF_ID\",
+    \"p_sunrise_patient_id\": \"$S_PATIENT_ID\",
+    \"p_sunrise_admin_id\": \"$S_ADMIN_ID\"
   }")
 
 echo "Seed result: $SEED_RESULT"
 
 echo ""
-echo "Done! Demo accounts:"
-echo "  clinician@nightingale.demo / demo-password-123"
-echo "  staff@nightingale.demo     / demo-password-123"
-echo "  patient@nightingale.demo   / demo-password-123"
-echo "  admin@nightingale.demo     / demo-password-123"
+echo "Done! Demo accounts (all use password: demo-password-123)"
+echo "  Nightingale Family Clinic:"
+echo "    clinician@nightingale.demo   Dr. Sarah Chen"
+echo "    staff@nightingale.demo       Nurse James Rivera"
+echo "    patient@nightingale.demo     Alice Wong"
+echo "    admin@nightingale.demo       Maria Santos"
+echo "  Sunrise Medical Center:"
+echo "    dr.miller@sunrise.demo       Dr. James Miller"
+echo "    emma.wilson@sunrise.demo     Emma Wilson"
+echo "    robert.lee@sunrise.demo      Robert Lee"
+echo "    michael.brown@sunrise.demo   Michael Brown"
