@@ -59,10 +59,37 @@ _UNRESOLVED_KEYWORDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Supabase client (lazy singleton)
+# Interaction source (injectable)
 # ---------------------------------------------------------------------------
+# The learned weight is derived from interaction_log. Production reads it from
+# Supabase with the service-role key; tests inject a reader backed by the
+# ephemeral Postgres cluster. Injecting the source is what lets
+# test_self_learning_importance exercise the real scoring path instead of
+# asserting on seed rows.
+#
+# The reader is ALWAYS called with a clinic_id. The previous implementation
+# accepted a patient_id, ignored it, and queried the 200 most recent rows
+# globally through a service-role client that bypasses RLS — so clinician
+# behaviour at one clinic shifted scores at another (guardrails D4).
+
+from typing import Callable, Protocol
+
+
+class InteractionSource(Protocol):
+    """Returns recent highlight interactions for one clinic."""
+
+    def __call__(self, clinic_id: str | None, limit: int = 200) -> list[dict[str, Any]]:
+        ...
+
 
 _supabase_client: Any | None = None
+_interaction_source: InteractionSource | None = None
+
+
+def set_interaction_source(source: InteractionSource | None) -> None:
+    """Override where learned weights are read from. Pass None to restore default."""
+    global _interaction_source
+    _interaction_source = source
 
 
 def _get_supabase() -> Any:
@@ -71,7 +98,7 @@ def _get_supabase() -> Any:
     if _supabase_client is not None:
         return _supabase_client
 
-    url = os.environ.get("SUPABASE_URL")
+    url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
     if not url or not key:
@@ -86,6 +113,42 @@ def _get_supabase() -> Any:
     _supabase_client = create_client(url, key)
     logger.info("Supabase client initialized for importance scoring")
     return _supabase_client
+
+
+def _default_source(clinic_id: str | None, limit: int = 200) -> list[dict[str, Any]]:
+    """Read interaction_log from Supabase, scoped to one clinic."""
+    client = _get_supabase()
+    if client is None:
+        return []
+
+    query = (
+        client.table("interaction_log")
+        .select("action_type, target_type, target_id, target_metadata, user_id")
+        .eq("target_type", "highlight")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    rows = query.execute().data or []
+
+    if clinic_id is None:
+        return rows
+
+    # Tenant boundary, re-applied by hand because the service-role key bypasses
+    # RLS. Only interactions by members of this clinic may influence its scores.
+    member_rows = (
+        client.table("profiles").select("id").eq("clinic_id", clinic_id).execute().data
+    ) or []
+    members = {r["id"] for r in member_rows}
+    return [r for r in rows if r.get("user_id") in members]
+
+
+def _read_interactions(clinic_id: str | None, limit: int = 200) -> list[dict[str, Any]]:
+    source = _interaction_source or _default_source
+    try:
+        return source(clinic_id, limit) or []
+    except Exception:
+        logger.exception("Failed to read interaction_log for learned weight")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -170,103 +233,70 @@ def _extract_keywords(text: str) -> set[str]:
 
 async def _compute_learned_score(
     content: str,
-    patient_id: str | None = None,
+    clinic_id: str | None = None,
 ) -> float:
     """
-    Query interaction_log in Supabase for similar content patterns.
+    Score how strongly this clinic has historically engaged with similar content.
 
-    Uses the actual schema fields: action_type, target_type, target_id,
-    target_metadata (JSONB with optional keywords field).
-    Groups interactions by target and computes weighted scores based on
-    action_type weights.
+    Returns 0.0-1.0, with 0.5 as the neutral prior when there is no signal, so an
+    unseen topic is neither promoted nor buried.
+
+    Engagement is weighted by action type (accept and manual_highlight count for
+    more than a view; reject and dismiss count against) and scaled by keyword
+    overlap between the candidate text and what was interacted with before.
     """
-    client = _get_supabase()
-    if client is None:
-        return 0.5  # Neutral default when Supabase is unavailable
-
     keywords = _extract_keywords(content)
     if not keywords:
         return 0.5
 
-    try:
-        # Query recent interaction logs for highlight engagement data
-        query = (
-            client.table("interaction_log")
-            .select("action_type, target_type, target_id, target_metadata")
-            .eq("target_type", "highlight")
-            .order("created_at", desc=True)
-            .limit(200)
-        )
-
-        response = query.execute()
-        rows = response.data if response.data else []
-
-        if not rows:
-            return 0.5
-
-        # Group interactions by target and compute weighted engagement
-        target_scores: dict[str, float] = {}
-        target_keyword_overlap: dict[str, float] = {}
-
-        for row in rows:
-            action_type = row.get("action_type", "view")
-            target_id = row.get("target_id", "")
-            metadata = row.get("target_metadata") or {}
-
-            # Extract keywords from target_metadata
-            stored_keywords_raw = metadata.get("keywords", [])
-            if isinstance(stored_keywords_raw, list):
-                stored_keywords = set(stored_keywords_raw)
-            elif isinstance(stored_keywords_raw, str):
-                stored_keywords = set(stored_keywords_raw.split(","))
-            else:
-                stored_keywords = set()
-
-            # If no stored keywords, use a small default overlap
-            if stored_keywords:
-                overlap = keywords & stored_keywords
-                if not overlap:
-                    continue
-                overlap_ratio = len(overlap) / max(len(keywords), 1)
-            else:
-                overlap_ratio = 0.2
-
-            # Get action weight
-            type_multiplier = ACTION_TYPE_WEIGHTS.get(action_type, 0.3)
-
-            # Accumulate per-target
-            if target_id not in target_scores:
-                target_scores[target_id] = 0.0
-                target_keyword_overlap[target_id] = 0.0
-
-            target_scores[target_id] += type_multiplier
-            target_keyword_overlap[target_id] = max(
-                target_keyword_overlap[target_id], overlap_ratio
-            )
-
-        if not target_scores:
-            return 0.5
-
-        # Compute overlap-weighted total score
-        total_score = 0.0
-        total_weight = 0.0
-
-        for target_id, score in target_scores.items():
-            overlap = target_keyword_overlap[target_id]
-            total_score += overlap * score
-            total_weight += overlap
-
-        if total_weight == 0:
-            return 0.5
-
-        raw = total_score / total_weight
-        # Normalize to 0.0-1.0 range using a soft cap
-        normalized = min(1.0, raw / 5.0)
-        return max(0.0, normalized)
-
-    except Exception:
-        logger.exception("Failed to query interaction_log for learned weight")
+    rows = _read_interactions(clinic_id)
+    if not rows:
         return 0.5
+
+    weighted_total = 0.0
+    overlap_total = 0.0
+
+    for row in rows:
+        metadata = row.get("target_metadata") or {}
+        stored_raw = metadata.get("keywords", [])
+        if isinstance(stored_raw, str):
+            stored = {k.strip().lower() for k in stored_raw.split(",") if k.strip()}
+        elif isinstance(stored_raw, list):
+            stored = {str(k).strip().lower() for k in stored_raw if str(k).strip()}
+        else:
+            stored = set()
+
+        topic = str(metadata.get("topic", "")).lower().replace("_", " ")
+        if topic:
+            stored |= {w for w in topic.split() if len(w) >= 3}
+
+        if not stored:
+            continue
+
+        overlap = keywords & stored
+        if not overlap:
+            continue
+
+        # Proportion of the candidate's vocabulary that this past interaction covers.
+        overlap_ratio = len(overlap) / max(len(keywords), 1)
+        weight = ACTION_TYPE_WEIGHTS.get(row.get("action_type", "view"), 0.3)
+
+        weighted_total += overlap_ratio * weight
+        overlap_total += overlap_ratio
+
+    if overlap_total == 0.0:
+        return 0.5
+
+    # Mean action weight across matching interactions, mapped from the
+    # ACTION_TYPE_WEIGHTS range (-0.3 .. 1.0) onto 0..1.
+    mean_weight = weighted_total / overlap_total
+    normalized = (mean_weight + 0.3) / 1.3
+
+    # Repeated engagement should compound, but with diminishing returns so a
+    # single hot topic cannot permanently dominate the glance view.
+    volume_bonus = min(0.25, 0.05 * overlap_total)
+
+    return max(0.0, min(1.0, normalized + volume_bonus))
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +308,7 @@ async def compute_importance_score(
     content: str,
     risk_level: str = "medium",
     created_at: str | datetime | None = None,
-    patient_id: str | None = None,
+    clinic_id: str | None = None,
 ) -> float:
     """
     Compute the composite importance score for a clinical highlight.
@@ -291,7 +321,8 @@ async def compute_importance_score(
         content: The highlight text (can be redacted).
         risk_level: One of 'critical', 'high', 'medium', 'low'.
         created_at: ISO timestamp or datetime of the source entry.
-        patient_id: Optional patient ID for patient-specific learning.
+        clinic_id: Clinic whose interaction history informs the learned weight.
+            Learning never crosses a clinic boundary.
 
     Returns:
         Float between 0.0 and 1.0.
@@ -299,7 +330,7 @@ async def compute_importance_score(
     recency = _compute_recency_score(created_at)
     risk = _compute_risk_score(risk_level)
     unresolved = _compute_unresolved_score(content)
-    learned = await _compute_learned_score(content, patient_id)
+    learned = await _compute_learned_score(content, clinic_id)
 
     score = (
         RECENCY_WEIGHT * recency
@@ -325,7 +356,7 @@ async def compute_importance_score(
 
 async def batch_score(
     highlights: list[dict[str, Any]],
-    patient_id: str | None = None,
+    clinic_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Compute importance scores for a batch of highlights in place.
@@ -340,7 +371,7 @@ async def batch_score(
             content=highlight.get("content_snippet", ""),
             risk_level=highlight.get("risk_level", "medium"),
             created_at=highlight.get("created_at"),
-            patient_id=patient_id,
+            clinic_id=clinic_id,
         )
         highlight["importance_score"] = score
 

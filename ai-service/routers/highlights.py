@@ -160,10 +160,13 @@ async def highlights(
                     h["created_at"] = entry.created_at
                     break
 
-        # Step 4: Apply self-learning importance scoring
+        # Step 4: Apply self-learning importance scoring.
+        # Scoped to the caller's clinic: learning must never cross a tenant
+        # boundary, and the caller's clinic comes from their verified JWT rather
+        # than from the request body, which a client could forge.
         scored_highlights = await batch_score(
             raw_highlights,
-            patient_id=request.patient_id,
+            clinic_id=caller.clinic_id,
         )
 
         # Step 5: De-redact highlight snippets

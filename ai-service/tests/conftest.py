@@ -1,122 +1,177 @@
 """
-Shared test fixtures for Nightingale AI service tests.
+Shared fixtures for the Nightingale micro-test suites.
 
-These tests use the Supabase API with real JWT tokens for each role
-to verify RLS policies, revision history, and AI features.
+These tests run against a REAL database — an ephemeral PostgreSQL cluster built
+from supabase/migrations/001_foundation.sql and seeded through the real
+seed_demo_data function. Nothing is mocked, and no credentials are required, so
+`pytest tests/ -v` works on a clean checkout.
+
+Every role fixture is subject to Row Level Security: statements execute as the
+non-superuser `authenticated` role with `request.jwt.claim.sub` set to that
+user, which is how Supabase evaluates a JWT. That is what makes the access
+control assertions meaningful rather than vacuous.
+
+If the Postgres binaries are unavailable the database-backed suites skip with a
+clear reason; the pure-unit suites (redaction, provenance) still run.
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
+
 import pytest
-import httpx
-from supabase import create_client, Client
 from dotenv import load_dotenv
 
-# Load environment from root .env file
+from tests.support.pgclient import PgClient
+from tests.support.pgharness import CLINIC_1, CLINIC_2, USERS, PgHarness, postgres_available
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
 
-SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL", "http://localhost:54321")
-SUPABASE_ANON_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8000")
 
-# Fixed UUIDs from seed data
-CLINIC_1_ID = "c0000000-0000-0000-0000-000000000001"
-CLINIC_2_ID = "c0000000-0000-0000-0000-000000000002"
-
-# Demo user credentials
-DEMO_USERS = {
-    "clinician": {
-        "email": os.getenv("TEST_CLINICIAN_EMAIL", "dr.chen@nightingale.demo"),
-        "password": os.getenv("TEST_CLINICIAN_PASSWORD", "demo-clinician-2026"),
-    },
-    "staff": {
-        "email": os.getenv("TEST_STAFF_EMAIL", "nurse.james@nightingale.demo"),
-        "password": os.getenv("TEST_STAFF_PASSWORD", "demo-staff-2026"),
-    },
-    "patient": {
-        "email": os.getenv("TEST_PATIENT_EMAIL", "alice.wong@nightingale.demo"),
-        "password": os.getenv("TEST_PATIENT_PASSWORD", "demo-patient-2026"),
-    },
-    "admin": {
-        "email": os.getenv("TEST_ADMIN_EMAIL", "maria.santos@nightingale.demo"),
-        "password": os.getenv("TEST_ADMIN_PASSWORD", "demo-admin-2026"),
-    },
-}
+__all__ = ["CLINIC_1", "CLINIC_2", "USERS"]
 
 
-@pytest.fixture
-def service_client() -> Client:
-    """Supabase client with service role key (bypasses RLS)."""
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# ---------------------------------------------------------------------------
+# Cluster lifecycle
+# ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def anon_client() -> Client:
-    """Supabase client with anon key (subject to RLS)."""
-    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+@pytest.fixture(scope="session")
+def pg() -> PgHarness:
+    """Start one cluster for the whole session and tear it down after."""
+    if not postgres_available():
+        pytest.skip(
+            "PostgreSQL binaries (initdb/pg_ctl) not on PATH. "
+            "Install with `brew install postgresql@14` to run the database suites."
+        )
+    harness = PgHarness()
+    harness.start()
+    harness.build()
+    yield harness
+    harness.stop()
 
 
-async def _get_authenticated_client(role: str) -> Client:
-    """Create a Supabase client authenticated as a specific role."""
-    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-    creds = DEMO_USERS[role]
-    result = client.auth.sign_in_with_password({
-        "email": creds["email"],
-        "password": creds["password"],
-    })
-    return client
+@pytest.fixture(autouse=True)
+def _reset_between_tests(request) -> None:
+    """
+    Restore seed state after any test that writes.
+
+    Only applies to tests that actually took a database fixture, so the pure
+    unit suites pay nothing for it.
+    """
+    yield
+    if "pg" in request.fixturenames:
+        try:
+            request.getfixturevalue("pg").reset_data()
+        except Exception:  # pragma: no cover - teardown must not mask failures
+            pass
 
 
-@pytest.fixture
-async def clinician_client() -> Client:
-    """Supabase client authenticated as clinician (Dr. Sarah Chen)."""
-    return await _get_authenticated_client("clinician")
+def _client(pg: PgHarness, role: str) -> PgClient:
+    return PgClient(pg.dsn, USERS[role][0])
+
+
+# ---------------------------------------------------------------------------
+# Role-scoped clients (RLS applies)
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def staff_client() -> Client:
-    """Supabase client authenticated as staff (Nurse James)."""
-    return await _get_authenticated_client("staff")
+def clinician_client(pg) -> PgClient:
+    """Dr. Sarah Chen — Nightingale Family Clinic."""
+    return _client(pg, "clinician")
 
 
 @pytest.fixture
-async def patient_client() -> Client:
-    """Supabase client authenticated as patient (Alice Wong)."""
-    return await _get_authenticated_client("patient")
+def staff_client(pg) -> PgClient:
+    """Nurse James Rivera — Nightingale Family Clinic."""
+    return _client(pg, "staff")
 
 
 @pytest.fixture
-async def admin_client() -> Client:
-    """Supabase client authenticated as admin (Maria Santos)."""
-    return await _get_authenticated_client("admin")
+def patient_client(pg) -> PgClient:
+    """Alice Wong — Nightingale Family Clinic."""
+    return _client(pg, "patient")
 
 
 @pytest.fixture
-def ai_client() -> httpx.AsyncClient:
-    """HTTP client for the AI service."""
-    return httpx.AsyncClient(base_url=AI_SERVICE_URL)
+def admin_client(pg) -> PgClient:
+    """Maria Santos — Nightingale Family Clinic."""
+    return _client(pg, "admin")
 
 
 @pytest.fixture
-async def sample_care_note_id(patient_client) -> str:
-    """Get the care note ID for the demo patient."""
-    patient_user_id = (patient_client.auth.get_user()).user.id
+def sunrise_clinician_client(pg) -> PgClient:
+    """Dr. James Miller — Sunrise Medical Center. Used for cross-clinic denial."""
+    return _client(pg, "sunrise_clinician")
+
+
+@pytest.fixture
+def sunrise_patient_client(pg) -> PgClient:
+    """Robert Lee — Sunrise Medical Center."""
+    return _client(pg, "sunrise_patient")
+
+
+@pytest.fixture
+def service_client(pg) -> PgClient:
+    """
+    Bypasses RLS, as the service-role key does.
+
+    Use only to arrange fixtures or to observe ground truth — never to assert an
+    access-control outcome, since it can see everything by construction.
+    """
+    return PgClient(pg.dsn, None, service_role=True)
+
+
+@pytest.fixture
+def anon_client(pg) -> PgClient:
+    """No identity: auth.uid() is NULL, so every policy should deny."""
+    return PgClient(pg.dsn, None)
+
+
+# ---------------------------------------------------------------------------
+# Convenience data fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def user_ids() -> dict[str, str]:
+    return {name: uid for name, (uid, _) in USERS.items()}
+
+
+@pytest.fixture
+def sample_care_note_id(service_client) -> str:
+    """Alice Wong's care note."""
     result = (
-        patient_client.table("care_notes")
+        service_client.table("care_notes")
         .select("id")
-        .eq("patient_id", patient_user_id)
+        .eq("patient_id", USERS["patient"][0])
         .limit(1)
         .execute()
     )
-    assert len(result.data) > 0, "No care notes found - run seed data first"
+    assert result.data, "Seed data missing: no care note for the demo patient"
     return result.data[0]["id"]
 
 
 @pytest.fixture
-async def sample_timeline_entries(clinician_client, sample_care_note_id) -> list:
-    """Get timeline entries for the demo care note."""
+def sunrise_care_note_id(service_client) -> str:
+    """Robert Lee's care note, in the other clinic."""
+    result = (
+        service_client.table("care_notes")
+        .select("id")
+        .eq("patient_id", USERS["sunrise_patient"][0])
+        .limit(1)
+        .execute()
+    )
+    assert result.data, "Seed data missing: no care note for the Sunrise patient"
+    return result.data[0]["id"]
+
+
+@pytest.fixture
+def sample_timeline_entries(clinician_client, sample_care_note_id) -> list:
     result = (
         clinician_client.table("timeline_entries")
         .select("*")
@@ -128,8 +183,7 @@ async def sample_timeline_entries(clinician_client, sample_care_note_id) -> list
 
 
 @pytest.fixture
-async def sample_highlights(clinician_client, sample_care_note_id) -> list:
-    """Get highlights for the demo care note."""
+def sample_highlights(clinician_client, sample_care_note_id) -> list:
     result = (
         clinician_client.table("highlights")
         .select("*")

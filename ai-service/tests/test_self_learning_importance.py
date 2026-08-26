@@ -289,3 +289,236 @@ class TestSelfLearningImportance:
             assert metadata is not None, (
                 f"Interaction {entry['id']} has null target_metadata"
             )
+
+
+# ===========================================================================
+# The learning loop, exercised end to end
+# ===========================================================================
+# The suite above asserts that interactions are LOGGED. That is necessary but
+# not sufficient: the brief requires proving that subsequent suggestions show
+# increased priority as a result. These tests drive the real scorer
+# (services.importance.compute_importance_score) against real interaction_log
+# rows and assert the score actually moves.
+
+import asyncio  # noqa: E402
+
+from services.importance import (  # noqa: E402
+    batch_score,
+    compute_importance_score,
+    set_interaction_source,
+)
+from tests.support.pgharness import CLINIC_1, CLINIC_2, USERS  # noqa: E402
+
+
+@pytest.fixture
+def wire_scorer_to_db(service_client):
+    """
+    Point the importance scorer at the test database.
+
+    Production reads interaction_log from Supabase; here it reads the same table
+    from the ephemeral cluster, so the code path under test is the real one.
+    The clinic filter is applied exactly as the default source applies it.
+    """
+
+    def source(clinic_id, limit=200):
+        rows = (
+            service_client.table("interaction_log")
+            .select("*")
+            .eq("target_type", "highlight")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+        ) or []
+        if clinic_id is None:
+            return rows
+        members = {
+            r["id"]
+            for r in (
+                service_client.table("profiles")
+                .select("id")
+                .eq("clinic_id", clinic_id)
+                .execute()
+                .data
+                or []
+            )
+        }
+        return [r for r in rows if r.get("user_id") in members]
+
+    set_interaction_source(source)
+    yield
+    set_interaction_source(None)
+
+
+def _log_interaction(client, *, user_id, role, action, target_id, keywords, topic):
+    return (
+        client.table("interaction_log")
+        .insert(
+            {
+                "user_id": user_id,
+                "user_role": role,
+                "action_type": action,
+                "target_type": "highlight",
+                "target_id": target_id,
+                # Metadata only: topic and keywords, never patient text.
+                "target_metadata": {"keywords": keywords, "topic": topic},
+            }
+        )
+        .execute()
+    )
+
+
+class TestLearningLoopChangesScores:
+    """Pinning a topic must raise the priority of similar content next cycle."""
+
+    async def test_pinning_a_topic_raises_future_scores_for_similar_content(
+        self, wire_scorer_to_db, service_client, sample_highlights
+    ):
+        # A topic with no interaction history in this clinic.
+        candidate = "Patient reports worsening peripheral neuropathy and numbness in both feet"
+
+        before = await compute_importance_score(
+            candidate, risk_level="medium", clinic_id=CLINIC_1
+        )
+
+        # A clinician repeatedly engages with this topic.
+        target = sample_highlights[0]["id"]
+        for action in ("pin", "accept", "manual_highlight"):
+            _log_interaction(
+                service_client,
+                user_id=USERS["clinician"][0],
+                role="clinician",
+                action=action,
+                target_id=target,
+                keywords=["neuropathy", "numbness", "peripheral", "feet"],
+                topic="neuropathy",
+            )
+
+        after = await compute_importance_score(
+            candidate, risk_level="medium", clinic_id=CLINIC_1
+        )
+
+        assert after > before, (
+            f"Score did not increase after pinning similar content "
+            f"(before={before:.3f}, after={after:.3f})"
+        )
+
+    async def test_rejecting_a_topic_lowers_future_scores(
+        self, wire_scorer_to_db, service_client, sample_highlights
+    ):
+        candidate = "Routine reminder that the annual influenza vaccination is available"
+
+        before = await compute_importance_score(
+            candidate, risk_level="low", clinic_id=CLINIC_1
+        )
+
+        target = sample_highlights[0]["id"]
+        for _ in range(3):
+            _log_interaction(
+                service_client,
+                user_id=USERS["clinician"][0],
+                role="clinician",
+                action="reject",
+                target_id=target,
+                keywords=["influenza", "vaccination", "routine", "reminder"],
+                topic="vaccination",
+            )
+
+        after = await compute_importance_score(
+            candidate, risk_level="low", clinic_id=CLINIC_1
+        )
+
+        assert after < before, (
+            f"Score did not decrease after repeated rejection "
+            f"(before={before:.3f}, after={after:.3f})"
+        )
+
+    async def test_learning_does_not_cross_clinic_boundary(
+        self, wire_scorer_to_db, service_client, sample_highlights
+    ):
+        """
+        Clinic A's engagement must not shift Clinic B's scores.
+
+        This is the tenant boundary applied to the learning signal. The previous
+        implementation accepted a patient_id, ignored it, and pooled the 200 most
+        recent interactions across every clinic.
+        """
+        candidate = "Escalating albuminuria with declining filtration rate on repeat testing"
+
+        baseline_clinic_2 = await compute_importance_score(
+            candidate, risk_level="high", clinic_id=CLINIC_2
+        )
+
+        target = sample_highlights[0]["id"]
+        for action in ("pin", "accept", "accept"):
+            _log_interaction(
+                service_client,
+                user_id=USERS["clinician"][0],  # Nightingale Family Clinic
+                role="clinician",
+                action=action,
+                target_id=target,
+                keywords=["albuminuria", "filtration", "declining", "escalating"],
+                topic="renal_function",
+            )
+
+        after_clinic_1 = await compute_importance_score(
+            candidate, risk_level="high", clinic_id=CLINIC_1
+        )
+        after_clinic_2 = await compute_importance_score(
+            candidate, risk_level="high", clinic_id=CLINIC_2
+        )
+
+        assert after_clinic_1 > baseline_clinic_2, "Clinic 1 should have learned from its own pins"
+        assert after_clinic_2 == baseline_clinic_2, (
+            f"Clinic 2's score moved ({baseline_clinic_2:.3f} -> {after_clinic_2:.3f}) "
+            "because of Clinic 1's activity — learning crossed a tenant boundary"
+        )
+
+    async def test_unseen_topic_receives_neutral_prior(self, wire_scorer_to_db):
+        """No signal must neither promote nor bury a topic."""
+        a = await compute_importance_score(
+            "Entirely unrelated administrative scheduling housekeeping item",
+            risk_level="medium",
+            clinic_id=CLINIC_1,
+        )
+        b = await compute_importance_score(
+            "Different unrelated administrative scheduling housekeeping item",
+            risk_level="medium",
+            clinic_id=CLINIC_1,
+        )
+        assert a == b, "Two unseen topics at the same risk level should score identically"
+
+    async def test_batch_score_reorders_by_learned_priority(
+        self, wire_scorer_to_db, service_client, sample_highlights
+    ):
+        """
+        The observable outcome the brief asks for: after learning, a highlight on
+        the pinned topic outranks one that was repeatedly dismissed.
+        """
+        target = sample_highlights[0]["id"]
+        for action in ("pin", "accept", "manual_highlight"):
+            _log_interaction(
+                service_client, user_id=USERS["clinician"][0], role="clinician",
+                action=action, target_id=target,
+                keywords=["potassium", "hyperkalemia", "electrolyte"], topic="electrolytes",
+            )
+        for _ in range(3):
+            _log_interaction(
+                service_client, user_id=USERS["clinician"][0], role="clinician",
+                action="dismiss", target_id=target,
+                keywords=["parking", "administrative", "housekeeping"], topic="admin",
+            )
+
+        candidates = [
+            {"content_snippet": "Rising potassium with hyperkalemia risk on current electrolyte panel",
+             "risk_level": "medium"},
+            {"content_snippet": "Administrative housekeeping note regarding parking arrangements",
+             "risk_level": "medium"},
+        ]
+        scored = await batch_score(candidates, clinic_id=CLINIC_1)
+
+        clinical, admin = scored[0]["importance_score"], scored[1]["importance_score"]
+        assert clinical > admin, (
+            f"Learned priority did not reorder suggestions "
+            f"(clinical={clinical:.3f}, admin={admin:.3f})"
+        )
