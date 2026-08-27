@@ -143,3 +143,37 @@ UPDATE care_notes
 SET glance_cache = glance_cache - 'top_items' - 'changes_since_last_visit'
 WHERE glance_cache ? 'top_items'
    OR glance_cache ? 'changes_since_last_visit';
+
+-- ---------------------------------------------------------------------------
+-- PATIENT-FACING WRITES MUST CLEAR THE MAKER-CHECKER GATE
+--
+-- Anything a patient reads has to pass grounding and prohibited-speech checks
+-- first. Those run in the AI service, which files the approved entry with the
+-- service-role key and therefore bypasses RLS. Restricting user JWTs to
+-- `visibility = 'internal'` is what stops the gate being skipped by simply not
+-- calling it — a clinician's own token in curl now writes nothing patient-facing.
+--
+-- Idempotent.
+-- ---------------------------------------------------------------------------
+
+DROP POLICY IF EXISTS "Clinicians can create any entry"   ON timeline_entries;
+DROP POLICY IF EXISTS "Staff can create staff entries"    ON timeline_entries;
+
+CREATE POLICY "Clinicians can create any entry"
+  ON timeline_entries FOR INSERT
+  WITH CHECK (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('clinician', 'admin')
+    AND author_id = auth.uid()
+    AND visibility = 'internal'
+  );
+
+CREATE POLICY "Staff can create staff entries"
+  ON timeline_entries FOR INSERT
+  WITH CHECK (
+    check_care_note_access(care_note_id)
+    AND get_user_role() = 'staff'
+    AND author_role = 'staff'
+    AND author_id = auth.uid()
+    AND visibility = 'internal'
+  );

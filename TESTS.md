@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**312 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**328 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -30,10 +30,11 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_conflicts_endpoint`](#6-clinical-contradictions--26) | 26 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
 | [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
-| [`test_rbac_scope`](#9-rbac--18) | 18 | Role and tenant isolation at the database |
+| [`test_rbac_scope`](#9-rbac--22) | 22 | Role and tenant isolation at the database |
 | [`test_self_learning_importance`](#10-self-learning--11) | 11 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
+| [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
 
 ---
 
@@ -318,7 +319,7 @@ of the record.
 
 ---
 
-## 9. RBAC — 18
+## 9. RBAC — 22
 
 `tests/test_rbac_scope.py` · database, non-superuser
 
@@ -394,6 +395,38 @@ service role sees    11   (RLS bypassed)
 
 Denied writes raise rather than silently no-op, and an anonymous caller reads
 nothing anywhere.
+
+---
+
+## 13. Patient message gate — 12
+
+`tests/test_patient_message_gate.py` · endpoint, Supabase stubbed at the writer
+
+The maker-checker firewall in the path a message actually travels. The gate
+module had passing unit tests for a long time while **nothing called it**: the
+clinician pressed Send and the browser inserted straight into
+`timeline_entries`, so an edit made after the draft returned — the moment a dose
+becomes `100000000mg` — reached the patient unchecked.
+
+These cover the endpoint that closed it. A fabricated dose, a unit swap
+(`10ml` where the record says `10mg`), and a prohibited speech act each return
+`422` naming the offending token, and each asserts **no row was written**. The
+control asserts a grounded draft does send, carries the approver's attribution,
+and records the verdict in metadata.
+
+Two tests cover the properties that make the check meaningful rather than
+decorative. `test_request_supplied_sources_are_ignored` sends a fabricated dose
+*along with sources that would ground it* — the server reads the record instead,
+so it still blocks. `test_clinician_edits_are_what_get_checked` sends a grounded
+draft and then an edited ungrounded one, asserting exactly one write.
+
+The database half lives in §9: both care-team INSERT policies carry
+`AND visibility = 'internal'`, so a clinician's own token cannot create a
+patient-visible row at all and the gate cannot be skipped by not calling it.
+
+Checked by mutation: ignoring the gate verdict in the router fails 6 of these,
+including the source-supply test. Removing the RLS clause fails the two bypass
+tests in §9.
 
 ---
 

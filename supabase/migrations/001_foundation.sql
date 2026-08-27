@@ -403,12 +403,25 @@ CREATE POLICY "Patients can view their own visible entries"
     )
   );
 
+-- `visibility = 'internal'` on both care-team INSERT policies is the enforcement
+-- half of the patient-facing maker-checker gate.
+--
+-- Anything a patient reads has to clear grounding and prohibited-speech checks
+-- first (services/safety/patient_gate.py). Those run in the AI service, which
+-- writes the approved entry with the service-role key — so it bypasses RLS and
+-- is unaffected by this clause. A user JWT, however, cannot create a
+-- patient-visible row at all, which means the check cannot be skipped by simply
+-- not calling the endpoint: a clinician's own token in curl writes nothing.
+--
+-- Without this the gate is advice. The browser called it, so the UI was safe,
+-- but any request made outside the UI wrote straight to the patient's record.
 CREATE POLICY "Clinicians can create any entry"
   ON timeline_entries FOR INSERT
   WITH CHECK (
     check_care_note_access(care_note_id)
     AND get_user_role() IN ('clinician', 'admin')
     AND author_id = auth.uid()
+    AND visibility = 'internal'
   );
 
 CREATE POLICY "Staff can create staff entries"
@@ -418,6 +431,7 @@ CREATE POLICY "Staff can create staff entries"
     AND get_user_role() = 'staff'
     AND author_role = 'staff'
     AND author_id = auth.uid()
+    AND visibility = 'internal'
   );
 
 CREATE POLICY "Patients can create patient messages"

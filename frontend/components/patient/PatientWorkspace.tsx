@@ -26,7 +26,7 @@ import type {
   ChangeSinceLastVisit,
   CarePlanItem,
 } from '@/lib/types';
-import { Sparkles, FileText, Heart, Loader2, MessageSquare, Send, X } from 'lucide-react';
+import { Sparkles, FileText, Heart, Loader2, MessageSquare, Send, X, AlertTriangle } from 'lucide-react';
 
 const CareNoteEditor = dynamic(
   () => import('@/components/editor/CareNoteEditor').then((mod) => ({ default: mod.CareNoteEditor })),
@@ -69,6 +69,17 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   const [draftKeyPoints, setDraftKeyPoints] = useState<string[]>([]);
   const [generatingDraft, setGeneratingDraft] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  /**
+   * Why the send was refused, when it was. Held rather than toasted: the
+   * clinician needs the offending tokens in front of them while they edit, and a
+   * toast disappears in four seconds.
+   */
+  const [gateBlock, setGateBlock] = useState<{
+    verdict: string;
+    message: string;
+    ungroundedTerms: string[];
+    prohibitedHits: string[];
+  } | null>(null);
   const [clinicMembers, setClinicMembers] = useState<Profile[]>([]);
 
   useEffect(() => {
@@ -733,54 +744,76 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     }
   }, [careNote, entries, currentUser]);
 
+  /**
+   * Send a patient-facing message — through the maker-checker gate, never around it.
+   *
+   * The clinician can edit the draft freely before sending, and that is the whole
+   * risk: the AI's draft may have been grounded, but "10mg" edited to "100mg" is
+   * not, and it is the edited text the patient reads. So what gets screened is
+   * `draftMessage` as it stands at the moment of the click.
+   *
+   * This component no longer inserts into `timeline_entries` itself. The AI
+   * service screens and, only on the passing branch, writes the entry with the
+   * service-role key. Two reasons that matters more than it looks:
+   *
+   *   - Grounding is checked against sources the SERVER reads from the record.
+   *     If this component sent the sources, a fabricated dose could be shipped as
+   *     its own grounding and pass.
+   *   - A check performed here before an insert performed here is advice. Any
+   *     request made outside this UI — the clinician's own token in curl — would
+   *     skip it, because RLS permits a clinician to write timeline entries.
+   */
   const handleSendPatientMessage = useCallback(async () => {
     if (!careNote || !currentUser || !draftMessage.trim()) return;
 
     setSendingMessage(true);
+    setGateBlock(null);
     try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser) {
-        toast.error('Session expired. Please refresh the page.');
-        return;
-      }
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/send-patient-message`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            care_note_id: careNote.id,
+            // The edited text, not the original draft.
+            draft: draftMessage,
+          }),
+        }
+      );
 
-      // Clinicians and staff send "instruction" type entries to patients
-      const { error: insertError } = await supabase
-        .from('timeline_entries')
-        .insert({
-          care_note_id: careNote.id,
-          entry_type: 'instruction',
-          author_role: currentUser.role,
-          author_id: authUser.id,
-          content: {
-            type: 'doc',
-            content: [{ type: 'paragraph', content: [{ type: 'text', text: draftMessage }] }],
-          },
-          content_text: draftMessage,
-          risk_level: 'info',
-          visibility: 'patient_visible',
-          metadata: {
-            direction: 'outgoing',
-            ai_drafted: true,
-          },
+      if (response.status === 422) {
+        // Blocked. No row was written — the service screens before it writes.
+        const body = await response.json().catch(() => null);
+        const detail = body?.detail ?? {};
+        setGateBlock({
+          verdict: detail.verdict ?? 'blocked',
+          message: detail.message ?? 'This message cannot be sent as written.',
+          ungroundedTerms: detail.ungrounded_terms ?? [],
+          prohibitedHits: detail.prohibited_hits ?? [],
         });
-
-      if (insertError) {
-        console.error('Failed to send patient message:', insertError);
-        toast.error('Failed to send message');
         return;
       }
 
-      // Fetch the entry we just created
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = typeof body?.detail === 'string' ? body.detail : null;
+        toast.error(detail ?? 'Could not send the message');
+        return;
+      }
+
+      const sent = await response.json();
+
+      // Read the row back through the user's own session, so the timeline shows
+      // exactly what RLS will show on the next load rather than a local guess.
       const { data: newEntry } = await supabase
         .from('timeline_entries')
         .select('*, author:profiles!timeline_entries_author_profile_fkey(*)')
-        .eq('care_note_id', careNote.id)
-        .eq('author_id', authUser.id)
-        .eq('entry_type', 'instruction')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .eq('id', sent.entry_id)
+        .maybeSingle();
 
       if (newEntry) {
         setEntries((prev) => [newEntry as TimelineEntry, ...prev]);
@@ -791,11 +824,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       setDraftKeyPoints([]);
       toast.success('Care instructions sent to patient');
     } catch {
-      toast.error('Failed to send message');
+      toast.error('AI service unavailable — the message was not sent');
     } finally {
       setSendingMessage(false);
     }
-  }, [careNote, currentUser, draftMessage, supabase]);
+  }, [careNote, currentUser, draftMessage, supabase, token]);
 
   const handleSendPatientUpdate = useCallback(async () => {
     if (!careNote || !currentUser || !draftMessage.trim()) return;
@@ -1179,7 +1212,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
               </p>
               <textarea
                 value={draftMessage}
-                onChange={(e) => setDraftMessage(e.target.value)}
+                onChange={(e) => { setDraftMessage(e.target.value); setGateBlock(null); }}
                 className="w-full min-h-[180px] p-3 bg-secondary/50 border border-border rounded-lg text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all resize-y"
                 placeholder="Example: I've been feeling dizzy in the mornings, and my appetite has decreased since last week..."
               />
@@ -1327,7 +1360,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                   <h3 className="text-sm font-semibold">Draft Patient Message</h3>
                 </div>
                 <button
-                  onClick={() => { setShowMessageDraft(false); setDraftMessage(''); setDraftKeyPoints([]); }}
+                  onClick={() => { setShowMessageDraft(false); setDraftMessage(''); setDraftKeyPoints([]); setGateBlock(null); }}
                   className="text-muted-foreground hover:text-foreground"
                 >
                   <X className="w-4 h-4" />
@@ -1347,6 +1380,65 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                     className="w-full min-h-[100px] p-3 bg-secondary/50 border border-border rounded-lg text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all resize-y"
                     placeholder="Edit the draft message before sending..."
                   />
+                  {gateBlock && (
+                    <div
+                      role="alert"
+                      className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 space-y-2"
+                    >
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p className="text-xs font-semibold text-destructive">
+                            Not sent &mdash; nothing was written to the patient&apos;s record
+                          </p>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            {gateBlock.message}
+                          </p>
+                        </div>
+                      </div>
+
+                      {gateBlock.ungroundedTerms.length > 0 && (
+                        <div className="space-y-1 pl-6">
+                          <p className="text-[11px] font-medium text-muted-foreground">
+                            Not found anywhere in this patient&apos;s record:
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {gateBlock.ungroundedTerms.map((t) => (
+                              <code
+                                key={t}
+                                className="px-1.5 py-0.5 rounded bg-destructive/15 text-destructive text-[11px] font-mono"
+                              >
+                                {t}
+                              </code>
+                            ))}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            A dose or figure that appears here but not in the record may have been
+                            mistyped or invented. Correct it above and send again.
+                          </p>
+                        </div>
+                      )}
+
+                      {gateBlock.prohibitedHits.length > 0 && (
+                        <div className="space-y-1 pl-6">
+                          <p className="text-[11px] font-medium text-muted-foreground">
+                            Needs to come from you directly, not a drafted message:
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {gateBlock.prohibitedHits.map((h) => (
+                              <code
+                                key={h}
+                                className="px-1.5 py-0.5 rounded bg-destructive/15 text-destructive text-[11px] font-mono"
+                              >
+                                {h.replace(/_/g, ' ')}
+                              </code>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {draftKeyPoints.length > 0 && (
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-muted-foreground">Key points (reference):</p>
@@ -1364,7 +1456,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => { setShowMessageDraft(false); setDraftMessage(''); setDraftKeyPoints([]); }}
+                      onClick={() => { setShowMessageDraft(false); setDraftMessage(''); setDraftKeyPoints([]); setGateBlock(null); }}
                     >
                       Cancel
                     </Button>

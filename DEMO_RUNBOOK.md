@@ -436,10 +436,10 @@ grep '^ELEVENLABS_LIVE_ENABLED=' .env    # confirm: false
 
 ```bash
 cd /Users/rohitpanda/Downloads/Nightingle/Nightingale_August/ai-service && \
-  .venv/bin/python -m pytest tests/ -q          # expect 312 passed
+  .venv/bin/python -m pytest tests/ -q          # expect 328 passed
 ```
 
-- [ ] 312 tests pass
+- [ ] 328 tests pass
 - [ ] `/ready` — all five checks `true`
 - [ ] Collab handshake test prints `HANDSHAKE OK`
 - [ ] Editor badge reads **Live**, not Local Only

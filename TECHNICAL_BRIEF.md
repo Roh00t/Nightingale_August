@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**312 automated tests, runnable offline with no credentials.**
+**328 automated tests, runnable offline with no credentials.**
 
 **Live deployment.** Three tiers, three hosts:
 
@@ -84,6 +84,7 @@ exercised locally and by the suite; the §4 safety layer runs on Railway.
 | `/api/ai/redact` | PHI redaction; counts only, map never leaves the server |
 | `/api/ai/scribe` | AI-scribed consult → system-authored timeline entry |
 | `/api/ai/conflicts` | cross-author clinical contradiction detection |
+| `/api/ai/send-patient-message` | maker-checker gate, then the only write to a patient-visible entry |
 | `/api/ai/transcribe` | ambient voice → diarized → redacted → structured |
 
 Four processes, one Postgres. The safety layer sits between the model and the
@@ -471,6 +472,30 @@ ungrounded content is precisely what gates 1 and 2 exist to prevent, so the
 checks run first. A blocked draft is returned for editing — never softened or
 auto-corrected, because silent repair hides the failure.
 
+**Where the gate sits, and why that is most of the design.** For a while this
+module existed with passing unit tests and *nothing called it*. The clinician
+pressed Send and the browser inserted straight into `timeline_entries`, so the
+check that stops `10mg` becoming `100mg` was not in the path a message travels.
+Three properties fix that, and each closes a different hole:
+
+| Property | Hole it closes |
+|---|---|
+| The **edited** text is screened, at the moment of Send | The AI's draft may be grounded; the clinician's edit of it is the thing the patient reads |
+| Sources are read **server-side** from the record | If the caller supplied them, a fabricated dose could be sent as its own grounding and verify against itself |
+| The write happens on the **passing branch of the same call** | A check the browser runs before its own insert is advice, skipped by any request made outside the UI |
+
+The last one needs the database, not just the endpoint. `POST
+/api/ai/send-patient-message` files the approved entry with the service-role key,
+and both care-team INSERT policies on `timeline_entries` now carry
+`AND visibility = 'internal'`. A clinician's own token — in curl, in Postman —
+can write internal notes all day and cannot create a patient-visible row at all.
+The only route to the patient runs through the gate.
+
+Blocked responses return `422` with the offending tokens, and the UI renders them
+as highlighted chips beside the draft rather than a generic failure, so the
+clinician is pointed at `100000000mg` instead of re-reading their own message
+looking for what upset it.
+
 ### 4.6 Feedback loop: exposure bias and fatigue
 
 Both hazards are structural, and neither is fixed by better prompting.
@@ -714,7 +739,7 @@ once live transcription is running.
 ## 7. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 312 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 328 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs

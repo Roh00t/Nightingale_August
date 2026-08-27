@@ -411,3 +411,92 @@ class TestPatientCannotReachInternalAssessment:
                 f"patient can see a {row['risk_level']} entry: {row['entry_type']}"
             )
             assert row["visibility"] == "patient_visible" or row["entry_type"] == "patient_message"
+
+
+class TestPatientFacingWritesRequireTheGate:
+    """
+    The database half of the maker-checker firewall.
+
+    Screening in the AI service protects the UI path. It does not protect the
+    record, because a clinician's own JWT can reach PostgREST directly — the
+    same reasoning as the assessment leak above, in the write direction. So the
+    INSERT policies admit `visibility = 'internal'` only, and every
+    patient-facing entry has to arrive through the service-role write that the
+    gate performs on its passing branch.
+    """
+
+    async def test_clinician_cannot_insert_patient_visible_entry(
+        self, clinician_client, sample_care_note_id, user_ids
+    ):
+        """The bypass the gate exists to prevent: straight to the patient, unchecked."""
+        with pytest.raises(Exception) as exc:
+            clinician_client.table("timeline_entries").insert({
+                "care_note_id": sample_care_note_id,
+                "author_id": user_ids["clinician"],
+                "author_role": "clinician",
+                "entry_type": "instruction",
+                "content": {"type": "doc", "content": []},
+                "content_text": "Take Lisinopril 100000000mg daily.",
+                "risk_level": "info",
+                "visibility": "patient_visible",
+            }).execute()
+        assert "row-level security" in str(exc.value).lower() or "42501" in str(exc.value)
+
+    async def test_staff_cannot_insert_patient_visible_entry(
+        self, staff_client, sample_care_note_id, user_ids
+    ):
+        with pytest.raises(Exception):
+            staff_client.table("timeline_entries").insert({
+                "care_note_id": sample_care_note_id,
+                "author_id": user_ids["staff"],
+                "author_role": "staff",
+                "entry_type": "instruction",
+                "content": {"type": "doc", "content": []},
+                "content_text": "Stop taking your medication.",
+                "risk_level": "info",
+                "visibility": "patient_visible",
+            }).execute()
+
+    async def test_internal_entries_still_work(
+        self, clinician_client, sample_care_note_id, user_ids
+    ):
+        """
+        The control. Restricting patient-facing writes must not block ordinary
+        clinical note-taking, which is the overwhelming majority of writes.
+        """
+        rows = (
+            clinician_client.table("timeline_entries").insert({
+                "care_note_id": sample_care_note_id,
+                "author_id": user_ids["clinician"],
+                "author_role": "clinician",
+                "entry_type": "manual_note",
+                "content": {"type": "doc", "content": []},
+                "content_text": "Reviewed labs; eGFR stable.",
+                "risk_level": "info",
+                "visibility": "internal",
+            }).execute()
+        ).data
+        assert rows, "clinicians must still be able to write internal notes"
+
+    async def test_service_role_can_still_file_the_approved_message(
+        self, service_client, sample_care_note_id, user_ids
+    ):
+        """
+        The gated path itself. The AI service writes with the service-role key
+        after screening, so this must remain possible — otherwise the policy
+        above would have closed the only legitimate route as well.
+        """
+        rows = (
+            service_client.table("timeline_entries").insert({
+                "care_note_id": sample_care_note_id,
+                "author_id": user_ids["clinician"],
+                "author_role": "clinician",
+                "entry_type": "instruction",
+                "content": {"type": "doc", "content": []},
+                "content_text": "Keep taking Lisinopril 10mg daily.",
+                "risk_level": "info",
+                "visibility": "patient_visible",
+                "metadata": {"patient_gate_verdict": "passed", "human_approved": True},
+            }).execute()
+        ).data
+        assert rows

@@ -148,3 +148,79 @@ def insert_highlights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     client = get_service_client()
     resp = client.table("highlights").insert(rows).execute()
     return resp.data or []
+
+
+def fetch_grounding_sources(care_note_id: str) -> list[str]:
+    """
+    The text a patient-facing draft must be grounded against, read server-side.
+
+    This is deliberately NOT taken from the request body. Grounding compares the
+    draft against the record; if the caller supplied the record, the check would
+    verify the draft against itself and a fabricated dose could be waved through
+    by sending it as its own source. The whole gate turns on this read being
+    authoritative.
+
+    Archived entries are included: a dose the clinician tapered off last month is
+    still a real number from the record, and excluding it would block a message
+    that legitimately refers back to it.
+    """
+    client = get_service_client()
+    resp = (
+        client.table("timeline_entries")
+        .select("content_text")
+        .eq("care_note_id", care_note_id)
+        .execute()
+    )
+    return [
+        row["content_text"]
+        for row in (resp.data or [])
+        if row.get("content_text")
+    ]
+
+
+def insert_patient_visible_entry(
+    *,
+    care_note_id: str,
+    author_id: str,
+    author_role: str,
+    content_text: str,
+    entry_type: str = "instruction",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    File a patient-visible message that has passed the maker-checker gate.
+
+    Written server-side with the service-role key, not from the browser. A
+    clinician's own JWT *could* satisfy the RLS INSERT policy here — unlike an
+    AI-scribed entry — so this is not about what RLS permits. It is about where
+    the gate sits: if the browser performs the insert, the grounding check is
+    advice the client may skip, and a request crafted outside the UI writes to
+    the patient's record ungated. Routing the write through the same call that
+    runs the gate removes both the bypass and the window between checking and
+    writing.
+
+    The caller's clinic has already been confirmed by resolve_care_note; the
+    role allowlist by require_roles. author_id is the real approving clinician,
+    never a sentinel — the patient is entitled to know who signed off.
+    """
+    client = get_service_client()
+    row = {
+        "care_note_id": care_note_id,
+        "author_role": author_role,
+        "author_id": author_id,
+        "entry_type": entry_type,
+        "content": {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": content_text}]}
+            ],
+        },
+        "content_text": content_text,
+        "risk_level": "info",
+        "visibility": "patient_visible",
+        "metadata": metadata or {},
+    }
+    resp = client.table("timeline_entries").insert(row).execute()
+    if not resp.data:
+        raise RuntimeError("Patient message insert returned no row")
+    return resp.data[0]
