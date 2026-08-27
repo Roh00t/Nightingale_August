@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**289 automated tests, runnable offline with no credentials.**
+**298 automated tests, runnable offline with no credentials.**
 
 ---
 
@@ -543,7 +543,7 @@ node scripts/measure_glance.mjs
 | `test_highlights_pipeline_safety` | 7 | the safety layer runs *inside the real route*, not just as modules |
 | `test_adversarial_safety` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS boundary probes |
 | `test_conflicts_endpoint` | 20 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
-| `test_transcribe_endpoint` | 24 | ambient voice pipeline, payload limits, credit guardrails |
+| `test_transcribe_endpoint` | 33 | ambient voice pipeline, payload limits, credit guardrails |
 
 The suites build their own PostgreSQL cluster from the migration file and run as
 a non-superuser. A superuser bypasses RLS, which would make every access-control

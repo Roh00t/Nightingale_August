@@ -45,6 +45,8 @@ interface TranscriptSegment {
 interface TranscribeResult {
   interaction_type: string;
   entry_type: string;
+  timeline_entry_id: string | null;
+  filed: boolean;
   summary: string;
   key_points: string[];
   redacted_transcript: string;
@@ -66,6 +68,16 @@ interface TranscribeResult {
 interface VoiceCaptureProps {
   token: string;
   userRole: UserRole;
+  /**
+   * File the summary to this care note.
+   *
+   * The write happens server-side, with the service-role key. It cannot happen
+   * in the browser: every INSERT policy on timeline_entries requires
+   * `author_id = auth.uid()`, and an AI-scribed entry is author_role='system'
+   * with author_id=NULL — impossible for any role to satisfy, which is the
+   * policy working correctly rather than a gap.
+   */
+  careNoteId?: string;
   /** Called with the summary so the caller can write it to the timeline. */
   onSummary?: (result: TranscribeResult) => void | Promise<void>;
 }
@@ -89,7 +101,7 @@ function pickMimeType(): string {
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
 }
 
-export function VoiceCapture({ token, userRole, onSummary }: VoiceCaptureProps) {
+export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCaptureProps) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -137,7 +149,10 @@ export function VoiceCapture({ token, userRole, onSummary }: VoiceCaptureProps) 
       form.append('audio', blob, `consult.${extension}`);
 
       const base = process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000';
-      const url = `${base}/api/ai/transcribe?interaction_type=${interactionTypeFor(userRole)}`;
+      const params = new URLSearchParams({ interaction_type: interactionTypeFor(userRole) });
+      // Filing is server-side; see careNoteId on the props above.
+      if (careNoteId) params.set('care_note_id', careNoteId);
+      const url = `${base}/api/ai/transcribe?${params.toString()}`;
 
       const response = await fetch(url, {
         method: 'POST',
@@ -159,7 +174,11 @@ export function VoiceCapture({ token, userRole, onSummary }: VoiceCaptureProps) 
       const data: TranscribeResult = await response.json();
       setResult(data);
       await onSummary?.(data);
-      toast.success('Consult transcribed and summarised');
+      toast.success(
+        data.filed
+          ? 'Consult transcribed and added to the timeline'
+          : 'Consult transcribed and summarised',
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transcription failed';
       setError(message);
@@ -168,7 +187,7 @@ export function VoiceCapture({ token, userRole, onSummary }: VoiceCaptureProps) 
       inFlightRef.current = false;
       setProcessing(false);
     }
-  }, [token, userRole, onSummary]);
+  }, [token, userRole, careNoteId, onSummary]);
 
   const stop = useCallback(() => {
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
@@ -323,6 +342,11 @@ export function VoiceCapture({ token, userRole, onSummary }: VoiceCaptureProps) 
               {(result.redaction.total_entities ?? 0) > 0 && (
                 <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
                   {result.redaction.total_entities} identifiers removed
+                </Badge>
+              )}
+              {result.filed && (
+                <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
+                  filed to timeline
                 </Badge>
               )}
               {result.transcription.source === 'mock' && (

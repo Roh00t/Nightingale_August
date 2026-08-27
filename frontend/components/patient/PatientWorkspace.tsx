@@ -393,48 +393,55 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   }, [highlights, logInteraction]);
 
   /**
-   * An ambient capture becomes an AI-scribed timeline entry.
+   * An ambient capture has already been filed by the time this runs.
    *
-   * author_role is 'system' and author_id is NULL — the note was produced by
-   * the scribe, not by the clinician holding the phone, and attributing it to a
-   * human would be a provenance lie. The entry type follows the capture mode,
-   * and provenance points back at the recording session.
+   * The entry is written server-side by /api/ai/transcribe using the
+   * service-role key. It deliberately does NOT happen here: every INSERT policy
+   * on timeline_entries requires `author_id = auth.uid()`, while an AI-scribed
+   * entry carries author_role='system' with author_id=NULL. No role can satisfy
+   * that — clinician and admin fail exactly as staff does — because a user
+   * session that could write author_role='system' could forge a note
+   * attributed to the AI scribe.
+   *
+   * This handler only reflects the result into local state so the new entry
+   * appears without a reload.
    */
   const handleVoiceSummary = useCallback(async (result: {
     summary: string;
     entry_type: string;
+    timeline_entry_id?: string | null;
+    filed?: boolean;
     transcription: Record<string, unknown>;
   }) => {
     if (!careNote || !result.summary?.trim()) return;
 
-    const { error } = await supabase.from('timeline_entries').insert({
-      care_note_id: careNote.id,
-      entry_type: result.entry_type,
-      author_role: 'system',
-      author_id: null,
-      content: {
-        type: 'doc',
-        content: [{ type: 'paragraph', content: [{ type: 'text', text: result.summary }] }],
-      },
-      content_text: result.summary,
-      provenance_pointer: {
-        source_type: 'scribe_session',
-        session_id: `voice-${Date.now()}`,
-        ai_model: result.transcription?.model_id ?? 'scribe_v2',
-      },
-      risk_level: 'info',
-      visibility: 'internal',
-      metadata: { capture: 'ambient_voice', ...result.transcription },
-    });
-
-    if (error) {
-      // RLS rejects author_role='system' from a user JWT by design; the AI
-      // service writes these with the service-role key. Surface it plainly
-      // rather than pretending the note was filed.
-      console.error('Could not file the ambient capture:', error);
-      toast.error('Summary produced, but it could not be filed to the timeline');
+    if (!result.filed || !result.timeline_entry_id) {
+      // The summary exists but was not persisted — say so rather than letting
+      // the clinician assume it is in the record.
+      toast.warning('Summary produced but not filed. Re-open the patient and retry.');
       return;
     }
+
+    // Read the row back through RLS: if the caller cannot see it, it should not
+    // appear in their timeline either.
+    const { data: entry, error } = await supabase
+      .from('timeline_entries')
+      .select('*, author:profiles!timeline_entries_author_profile_fkey(*)')
+      .eq('id', result.timeline_entry_id)
+      .single();
+
+    if (error) {
+      console.error(
+        'Ambient capture filed but could not be read back:',
+        error.message || error.details || error.hint || error.code || JSON.stringify(error),
+      );
+      toast.info('Summary filed. Refresh to see it in the timeline.');
+      return;
+    }
+
+    setEntries((prev) =>
+      prev.some((e) => e.id === entry.id) ? prev : [entry as TimelineEntry, ...prev],
+    );
     toast.success('Consult summary added to the timeline');
   }, [careNote, supabase]);
 
@@ -1145,6 +1152,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             <VoiceCapture
               token={token}
               userRole="patient"
+              careNoteId={careNote.id}
               onSummary={handleVoiceSummary}
             />
           )}
@@ -1466,6 +1474,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                 <VoiceCapture
                   token={token}
                   userRole={activeRole}
+                  careNoteId={careNote.id}
                   onSummary={handleVoiceSummary}
                 />
               </div>

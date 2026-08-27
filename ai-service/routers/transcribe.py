@@ -35,7 +35,17 @@ from pydantic import BaseModel, Field
 
 from services.auth import CallerIdentity, require_roles
 from services.llm import generate_patient_summary
-from services.provenance import ENTRY_TYPE_BY_INTERACTION, entry_type_for
+from services.provenance import (
+    ENTRY_TYPE_BY_INTERACTION,
+    entry_type_for,
+    scribe_session_pointer,
+)
+from services.supabase_writer import (
+    AccessDenied,
+    SupabaseUnavailable,
+    insert_system_timeline_entry,
+    resolve_care_note,
+)
 from services.redaction import (
     assert_no_residual_placeholders,
     cleanup_redaction_map,
@@ -43,6 +53,8 @@ from services.redaction import (
     redact,
     validate_and_repair_placeholders,
 )
+from uuid import uuid4
+
 from services.transcription import (
     ACCEPTED_AUDIO_TYPES,
     MAX_AUDIO_BYTES,
@@ -87,6 +99,14 @@ class TranscribeResponse(BaseModel):
 
     transcription: dict[str, Any] = Field(default_factory=dict)
     redaction: dict[str, Any] = Field(default_factory=dict)
+
+    # Set when care_note_id was supplied and the entry was filed server-side.
+    # None means "not requested" — the caller asked for a summary only.
+    timeline_entry_id: str | None = Field(default=None)
+    filed: bool = Field(
+        default=False,
+        description="Whether the summary was written to the timeline.",
+    )
 
 
 async def _read_capped(upload: UploadFile) -> bytes:
@@ -141,6 +161,13 @@ async def transcribe_audio(
         description=(
             "Request a metered ElevenLabs call. Ignored unless the deployment also "
             "sets ELEVENLABS_LIVE_ENABLED=true."
+        ),
+    ),
+    care_note_id: str | None = Query(
+        default=None,
+        description=(
+            "File the summary to this care note as a system-authored entry. "
+            "Omit to receive the summary without writing anything."
         ),
     ),
     caller: CallerIdentity = Depends(require_roles("clinician", "staff", "admin", "patient")),
@@ -271,7 +298,62 @@ async def transcribe_audio(
             rmap.total_entities, transcript.source,
         )
 
+        # --- 6. File to the timeline, server-side ---------------------------
+        #
+        # This MUST happen here rather than in the browser. Every INSERT policy
+        # on timeline_entries requires `author_id = auth.uid()`, and an
+        # AI-scribed entry carries author_role='system' with author_id=NULL, so
+        # the write is impossible from a user JWT for EVERY role — clinician and
+        # admin included, not just staff. That is the policy working correctly:
+        # if a user session could write author_role='system', any user could
+        # forge a note attributed to the AI scribe.
+        #
+        # So the write happens with the service-role key, which bypasses RLS,
+        # and the tenant and ownership checks RLS would have applied are
+        # re-implemented here by hand (guardrails.md S3).
+        entry_id: str | None = None
+        if care_note_id:
+            try:
+                care_note = resolve_care_note(
+                    care_note_id, caller_clinic_id=caller.clinic_id
+                )
+            except SupabaseUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except AccessDenied as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            # A patient may only file into their OWN care note. Clinic match
+            # alone would let them write into a peer's record.
+            if caller.role == "patient" and care_note.get("patient_id") != caller.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Patients may only file captures to their own care note.",
+                )
+
+            entry = insert_system_timeline_entry(
+                care_note_id=care_note_id,
+                entry_type=entry_type,
+                content_text=summary,
+                provenance_pointer=scribe_session_pointer(
+                    session_id=f"voice-{uuid4().hex[:12]}",
+                    ai_model=transcript.model_id,
+                ),
+                metadata={
+                    "capture": "ambient_voice",
+                    "captured_by": caller.user_id,
+                    "captured_by_role": caller.role,
+                    **transcript.to_metadata(),
+                },
+                risk_level="info",
+            )
+            entry_id = entry["id"]
+            logger.info(
+                "Filed ambient capture %s to care note %s", entry_id, care_note_id
+            )
+
         return TranscribeResponse(
+            timeline_entry_id=entry_id,
+            filed=entry_id is not None,
             interaction_type=interaction_type,
             entry_type=entry_type,
             summary=summary,

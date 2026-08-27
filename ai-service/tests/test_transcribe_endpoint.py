@@ -392,3 +392,160 @@ class TestCreditGuardrails:
         """A fixture that varies between runs is not a fixture."""
         from services.transcription import mock_transcript
         assert mock_transcript().text == mock_transcript().text
+
+
+class TestServerSideFiling:
+    """
+    Filing an ambient capture to the timeline.
+
+    This exists because of a live demo failure: the browser tried to insert the
+    AI-scribed entry itself and got `42501 new row violates row-level security
+    policy`. It was reported as a staff-role problem, but it fails identically
+    for clinician and admin — every INSERT policy on timeline_entries requires
+    `author_id = auth.uid()`, while an AI-scribed entry is author_role='system'
+    with author_id=NULL. No user JWT can satisfy that, and it should not: a
+    session that could write author_role='system' could forge a note attributed
+    to the AI scribe.
+
+    So the write moved server-side, behind the service-role key, with the tenant
+    and ownership checks re-applied by hand.
+    """
+
+    @pytest.fixture
+    def writer(self, monkeypatch):
+        """Capture what would be written, without touching a database."""
+        state: dict = {"inserted": None, "resolved": None}
+
+        def _resolve(care_note_id, *, caller_clinic_id):
+            state["resolved"] = (care_note_id, caller_clinic_id)
+            return {"id": care_note_id, "clinic_id": caller_clinic_id,
+                    "patient_id": "00000000-0000-0000-0000-000000000009"}
+
+        def _insert(**kwargs):
+            state["inserted"] = kwargs
+            return {"id": "entry-filed-1", **kwargs}
+
+        monkeypatch.setattr("routers.transcribe.resolve_care_note", _resolve)
+        monkeypatch.setattr("routers.transcribe.insert_system_timeline_entry", _insert)
+        return state
+
+    def test_no_care_note_id_means_summary_only(self, client, writer):
+        """Omitting care_note_id returns the summary and writes nothing."""
+        body = post_audio(client).json()
+        assert body["filed"] is False
+        assert body["timeline_entry_id"] is None
+        assert writer["inserted"] is None
+
+    def test_filing_writes_a_system_authored_entry(self, client, writer):
+        body = post_audio(client, care_note_id="note-1").json()
+
+        assert body["filed"] is True
+        assert body["timeline_entry_id"] == "entry-filed-1"
+
+        row = writer["inserted"]
+        # The combination no user JWT can produce.
+        assert row["entry_type"] == "ai_doctor_consult_summary"
+        assert row["care_note_id"] == "note-1"
+        assert row["content_text"] == body["summary"]
+        # Provenance points back at the recording session.
+        assert row["provenance_pointer"]["source_type"] == "scribe_session"
+        assert row["provenance_pointer"]["session_id"].startswith("voice-")
+        assert row["metadata"]["capture"] == "ambient_voice"
+
+    def test_filing_is_clinic_scoped(self, client, writer):
+        """
+        The service-role key bypasses RLS, so the tenant check RLS would have
+        applied is re-applied here (guardrails S3).
+        """
+        post_audio(client, care_note_id="note-1")
+        care_note_id, clinic_id = writer["resolved"]
+        assert care_note_id == "note-1"
+        assert clinic_id == CLINIC_1, "the caller's clinic was not enforced"
+
+    def test_cross_clinic_care_note_is_404(self, client, monkeypatch):
+        """A foreign care note must not be writable, and must not be probeable."""
+        from services.supabase_writer import AccessDenied
+
+        def _deny(care_note_id, *, caller_clinic_id):
+            raise AccessDenied(f"Care note {care_note_id} not found")
+
+        monkeypatch.setattr("routers.transcribe.resolve_care_note", _deny)
+        response = post_audio(client, care_note_id="someone-elses-note")
+        assert response.status_code == 404
+
+    def test_filing_records_who_captured_it(self, client, writer):
+        """
+        author_id stays NULL because the scribe wrote the note, but the human
+        who pressed record is recorded in metadata — otherwise an AI-scribed
+        entry has no accountable origin at all.
+        """
+        post_audio(client, care_note_id="note-1")
+        meta = writer["inserted"]["metadata"]
+        assert meta["captured_by"] == "00000000-0000-0000-0000-000000000001"
+        assert meta["captured_by_role"] == "clinician"
+
+    @pytest.mark.parametrize("role,interaction,expected_entry_type", [
+        ("clinician", "doctor_consult", "ai_doctor_consult_summary"),
+        ("staff", "nurse_consult", "ai_nurse_consult_summary"),
+        ("admin", "doctor_consult", "ai_doctor_consult_summary"),
+    ])
+    def test_every_care_team_role_can_file(
+        self, monkeypatch, writer, role, interaction, expected_entry_type
+    ):
+        """
+        The reported bug was 'staff cannot file'. It was never role-specific —
+        and after the fix, no role is blocked.
+        """
+        from services.auth import require_caller
+
+        async def _caller() -> CallerIdentity:
+            return CallerIdentity(
+                user_id="00000000-0000-0000-0000-000000000001",
+                role=role, clinic_id=CLINIC_1, display_name="Tester",
+            )
+
+        main.app.dependency_overrides[require_caller] = _caller
+
+        async def _fake(entries, summary_type="clinical_review"):
+            return {"summary": "Summary text.", "key_points": []}
+        monkeypatch.setattr("routers.transcribe.generate_patient_summary", _fake)
+
+        try:
+            body = post_audio(
+                TestClient(main.app), interaction_type=interaction, care_note_id="note-1"
+            ).json()
+            assert body["filed"] is True, f"{role} could not file"
+            assert writer["inserted"]["entry_type"] == expected_entry_type
+        finally:
+            main.app.dependency_overrides.clear()
+
+    def test_patient_cannot_file_into_another_patients_note(self, client, monkeypatch):
+        """Clinic match alone would let a patient write into a peer's record."""
+        from services.auth import require_caller
+
+        async def _patient() -> CallerIdentity:
+            return CallerIdentity(
+                user_id="patient-A", role="patient",
+                clinic_id=CLINIC_1, display_name="Patient A",
+            )
+        main.app.dependency_overrides[require_caller] = _patient
+
+        def _resolve(care_note_id, *, caller_clinic_id):
+            # Same clinic, but owned by a different patient.
+            return {"id": care_note_id, "clinic_id": caller_clinic_id,
+                    "patient_id": "patient-B"}
+        monkeypatch.setattr("routers.transcribe.resolve_care_note", _resolve)
+
+        async def _fake(entries, summary_type="clinical_review"):
+            return {"summary": "Summary text.", "key_points": []}
+        monkeypatch.setattr("routers.transcribe.generate_patient_summary", _fake)
+
+        try:
+            response = post_audio(
+                TestClient(main.app),
+                interaction_type="patient_session", care_note_id="note-B",
+            )
+            assert response.status_code == 403
+            assert "own care note" in response.json()["detail"]
+        finally:
+            main.app.dependency_overrides.clear()

@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**289 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
+**298 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
 
 ---
 
@@ -410,7 +410,7 @@ Full design rationale, failure modes and measured latency are in
 ## Testing
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 289 tests
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 298 tests
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs --n 100                 # glance P95
@@ -421,7 +421,7 @@ node scripts/measure_glance.mjs --n 100                 # glance P95
 | `test_clinical_safety.py` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
 | `test_adversarial_safety.py` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS probes |
 | `test_phi_redaction.py` | 41 | zero PHI leakage; clinical values preserved |
-| `test_transcribe_endpoint.py` | 24 | ambient voice pipeline, payload limits, credit guardrails |
+| `test_transcribe_endpoint.py` | 33 | ambient voice pipeline, payload limits, credit guardrails |
 | `test_highlight_provenance.py` | 21 | pointer schema, span resolution, referential integrity |
 | `test_conflicts_endpoint.py` | 20 | contradiction detection, JWK-set selection, auth failure modes |
 | `test_concurrent_edits.py` | 19 | non-destructive merge, deterministic resolution, atomic versioning |

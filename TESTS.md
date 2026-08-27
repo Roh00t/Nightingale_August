@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**289 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**298 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 cd ai-service && .venv/bin/python -m pytest tests/ -v
@@ -16,7 +16,7 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_clinical_safety`](#1-clinical-safety-layer--64) | 64 | The guardrails between the LLM and the record |
 | [`test_adversarial_safety`](#2-adversarial-evaluation--53) | 53 | Injection, obfuscation, multicultural PHI, RLS probes |
 | [`test_phi_redaction`](#3-phi-redaction--41) | 41 | No PHI reaches the LLM; no over-redaction |
-| [`test_transcribe_endpoint`](#4-ambient-voice-capture--24) | 24 | Voice pipeline, payload limits, credit guardrails |
+| [`test_transcribe_endpoint`](#4-ambient-voice-capture--33) | 33 | Voice pipeline, payload limits, credit guardrails, server-side filing |
 | [`test_highlight_provenance`](#5-highlight-provenance--21) | 21 | Every claim resolves to a source span |
 | [`test_conflicts_endpoint`](#6-clinical-contradictions--20) | 20 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
@@ -169,7 +169,7 @@ corrupt→repair→restore round trip leaves no residue.
 
 ---
 
-## 4. Ambient voice capture — 24
+## 4. Ambient voice capture — 33
 
 `tests/test_transcribe_endpoint.py` · FastAPI TestClient, mock transcript
 
@@ -206,6 +206,17 @@ asymmetry is deliberate rather than accidental.
 **Credit guardrails (4).** Default path uses the mock; `?live=true` alone cannot
 reach the meter; live requires both switches and fails loudly without a key
 rather than silently falling back; the mock transcript is deterministic.
+
+**Server-side filing (9).** Added after a live demo failure. The browser tried to
+insert the AI-scribed entry itself and got `42501`. It was reported as a
+staff-role problem; it failed identically for clinician and admin, because every
+INSERT policy requires `author_id = auth.uid()` while an AI-scribed entry is
+`author_role='system'` with `author_id=NULL`. No user JWT can satisfy that — and
+it should not, since a session that could would be able to forge a note
+attributed to the AI scribe. Filing moved behind the service-role key, with the
+tenant check re-applied by hand, a cross-clinic care note returning 404, a
+patient blocked from filing into a peer's note, and every care-team role
+verified able to file.
 
 ---
 
@@ -366,6 +377,7 @@ Every one would have shipped looking correct.
 | 14 | JWK **Set** handling broken in both services — every AI endpoint 503'd | End-to-end run |
 | 15 | Malformed token returned 500/503 instead of 401 | Auth failure-mode tests |
 | 16 | `001_foundation.sql` granted no table privileges — the deployed app could not read a row | Live benchmark |
+| 17 | Ambient captures could never be filed from the browser — `author_id=NULL` cannot satisfy any INSERT policy, for **any** role | Live demo |
 
 ---
 
