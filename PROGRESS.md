@@ -83,8 +83,8 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Synthetic data only
 - [x] TLS/at-rest — documented in the technical brief with a per-layer table
 
-### 6. Micro-tests — **306 passing, 0 failing, no credentials required**
-- [x] `test_rbac_scope` — 12, executing against real RLS
+### 6. Micro-tests — **312 passing, 0 failing, no credentials required**
+- [x] `test_rbac_scope` — 18, executing against real RLS
 - [x] `test_revision_history` — 16, incl. non-tautological revert + metadata-only audit
 - [x] `test_highlight_provenance` — 21 (12 offline schema + 9 DB)
 - [x] `test_concurrent_edits` — 19, deterministic resolution + atomic versioning
@@ -115,7 +115,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 
 ### Phase 3 — Make the tests real ✅ COMPLETE (commits c43d9f2, 7c8fd8e)
 113 tests passing at that point, with zero credentials configured. *(Historical —
-the suite is 306 today; see the checklist above.)*
+the suite is 312 today; see the checklist above.)*
 
 - Build `tests/conftest.py` fixtures around an ephemeral Postgres: `initdb` → apply
   `supabase/migrations/001_foundation.sql` → shim `auth.users` + `auth.uid()` → seed via the
@@ -295,7 +295,7 @@ that is not currently live. Stated plainly rather than presented as shipped.
 Clinical contradictions between authors are a different concern and **are**
 live, at `POST /api/ai/conflicts`.
 
-**Suite: 306 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
+**Suite: 312 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
 
 ---
 
@@ -369,22 +369,40 @@ nephrology consult if eGFR continues to decline", and a keyword scan flags that
 wrongly. The live verifier was confirmed non-vacuous: it reports 6 failures
 against the unfixed deployment.
 
-### Two steps that need a human
+### Host note — SysV shared memory (resolved)
 
-1. **Local suite is blocked by the machine, not the code.** SysV shared memory is
-   exhausted host-wide — even a 56-byte `shmget` returns ENOMEM with zero
-   segments allocated, leaked accounting from the many ephemeral clusters this
-   session. `initdb` cannot run, so the 207 DB-backed tests cannot execute.
-   Clear it with `sudo sysctl -w kern.sysv.shmall=65536 kern.sysv.shmmax=16777216`
-   or a reboot. The 105 offline tests (redaction, clinical safety) pass.
+The suite briefly could not run at all: `initdb` failed because SysV shared
+memory was exhausted host-wide — a 56-byte `shmget` returned ENOMEM with *zero*
+segments allocated, leaked kernel accounting from the many ephemeral clusters
+this session. macOS ships `kern.sysv.shmall=1024` (4 MB), which Postgres normally
+lives within since it uses mmap for the main region and only a tiny SysV segment
+as a postmaster interlock; once that accounting leaks there is no headroom left
+for even the interlock.
 
-2. **The live database still leaks** until `supabase/fix_live_grants.sql` is run
+Raised to `shmall=65536`, `shmmax=16777216` and the suite runs again. A reboot
+clears it too. Worth knowing before a demo: the symptom looks like a broken test
+harness and is not one.
+
+```bash
+sudo sysctl -w kern.sysv.shmall=65536 kern.sysv.shmmax=16777216
+```
+
+### One step that still needs a human
+
+1. **The live database still leaks** until `supabase/fix_live_grants.sql` is run
    in the Supabase SQL editor. DDL is not reachable through PostgREST and no
    database password or CLI token is present in the repo. **Apply the SQL before
    deploying the frontend** — the new page reads `care_note_assessments`, so a
    frontend deployed first would show clinicians an empty Top Card.
 
-**Test count held at 306 deliberately.** 312 now collect, but only 105 have been
-verified in this session; the docs will be updated to a measured number once the
-full suite can run again. An unverified count is exactly what the accuracy audit
-was for.
+**Suite: 312 passing** (was 306; the six new isolation assertions).
+`shmall`/`shmmax` were raised, `initdb` works again, and the full run is green in
+10.8s. Counts across README, TECHNICAL_BRIEF, TESTS, DEMO_SCRIPT and DEMO_RUNBOOK
+updated to that measured figure; `test_rbac_scope` goes 12 → 18.
+
+The new tests were checked for vacuity by mutation: putting `top_items` back into
+the seeded `glance_cache` fails
+`test_patient_glance_cache_carries_no_risk_assessment` with the leaked payload in
+the assertion message, while the other five stay green — each guards a distinct
+property, and the one that guards this regression is the one that fires. The seed
+was restored and the suite re-run before the count was recorded.

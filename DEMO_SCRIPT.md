@@ -21,7 +21,7 @@ someone wants to click through the record and RBAC without installing anything.
 ```bash
 # 1. Verify the whole suite is green — this is the claim the demo rests on
 cd ai-service && .venv/bin/python -m pytest tests/ -q
-# expect: 306 passed
+# expect: 312 passed
 
 # 2. Seed both clinics
 cd .. && ./scripts/seed.sh

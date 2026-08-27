@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**306 automated tests, runnable offline with no credentials.**
+**312 automated tests, runnable offline with no credentials.**
 
 **Live deployment:** https://nightingale-august-frontend-6ktv.vercel.app — the Next.js frontend against the live Supabase
 project. The FastAPI AI service and Hocuspocus collab server run as separate
@@ -669,7 +669,7 @@ once live transcription is running.
 ## 7. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 306 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 312 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs

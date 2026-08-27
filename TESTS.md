@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**306 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**312 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -30,7 +30,7 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_conflicts_endpoint`](#6-clinical-contradictions--26) | 26 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
 | [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
-| [`test_rbac_scope`](#9-rbac--12) | 12 | Role and tenant isolation at the database |
+| [`test_rbac_scope`](#9-rbac--18) | 18 | Role and tenant isolation at the database |
 | [`test_self_learning_importance`](#10-self-learning--11) | 11 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
@@ -318,7 +318,7 @@ of the record.
 
 ---
 
-## 9. RBAC — 12
+## 9. RBAC — 18
 
 `tests/test_rbac_scope.py` · database, non-superuser
 
@@ -328,6 +328,23 @@ enforced twice: entries are `visibility='internal'` *and* the patient SELECT
 policy excludes those entry types by name, so a mis-marked entry stays hidden.
 Patients can read back their own `patient_message` entries. Cross-clinic access
 is denied in both directions. Admin has clinic-scoped read access.
+
+Six assertions cover the **clinical risk assessment**, which is not patient-facing
+even though the care note carrying it is. RLS is row-level, so anything left in
+`care_notes.glance_cache` is readable by the patient who owns that row — a
+direct PostgREST call with their own token returned severity bands and model
+confidence verbatim, while the portal looked correct. The assessment now lives in
+`care_note_assessments`, which has no patient policy; the suite asserts zero rows
+for a patient by table and by `care_note_id`, no grading left in `glance_cache`,
+no high/critical timeline entry reachable, and — as the control — that clinician
+and staff access is *intact*, so the tests cannot be satisfied by breaking the
+care team instead.
+
+They match on the shape of a judgement (`risk_level`, `confidence`, `status`),
+not on clinical words: a patient's own care plan legitimately reads "Consider
+nephrology consult if eGFR continues to decline". Checked by mutation — putting
+`top_items` back into the seed fails the `glance_cache` assertion and leaves the
+other five green.
 
 ---
 
