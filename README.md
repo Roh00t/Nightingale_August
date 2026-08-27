@@ -433,8 +433,8 @@ node scripts/measure_glance.mjs --n 100                 # glance P95
 
 Full per-suite documentation, including every defect these tests found, is in
 **[TESTS.md](TESTS.md)**. Build progress and open risks are in
-**[PROGRESS.md](PROGRESS.md)**. Demo walkthrough in
-**[DEMO_SCRIPT.md](DEMO_SCRIPT.md)**.
+**[PROGRESS.md](PROGRESS.md)**. Demo narrative in **[DEMO_SCRIPT.md](DEMO_SCRIPT.md)**;
+exact startup and live-run commands in **[DEMO_RUNBOOK.md](DEMO_RUNBOOK.md)**.
 
 ## Licence
 
