@@ -5,16 +5,56 @@ rather than a feature: what the system does when something is *wrong*.
 
 ---
 
-## Record locally, not against the live URL
+## What works on the live host
 
-The deployment at **https://nightingale-august-frontend-6ktv.vercel.app** is the frontend against live Supabase. The FastAPI
-AI service and the Hocuspocus collab server are **not deployed**, so on the live
-host every AI moment in this script fails: no summaries, no highlights, no
-contradiction badges, no ambient capture, and the editor stays on "Local Only".
+The deployment at **https://nightingale-august-frontend-6ktv.vercel.app** is the
+Next.js frontend on Vercel, against live Supabase, with the FastAPI AI service on
+Railway. So the AI moments in this script **do** work there:
 
-Scenarios A and B both turn on those features, so **record against
-`http://localhost:3000` with all three services running.** Use the live URL when
-someone wants to click through the record and RBAC without installing anything.
+| Demo moment | Live | Why |
+|---|---|---|
+| Glance View, timeline, comments, revision history | ✅ | Supabase |
+| RBAC, patient isolation, cross-tenant denial | ✅ | Postgres RLS |
+| AI summaries and highlights | ✅ | Railway FastAPI → Groq |
+| Contradiction detection | ✅ | `POST /api/ai/conflicts` on Railway |
+| Ambient consult capture | ✅ | Railway → ElevenLabs Scribe |
+| **Multi-user co-editing, live cursors** | ⚠️ **"Local Only"** | Hocuspocus is not deployed |
+
+> **Status at 28 Aug 2026:** Railway answers `/health` and `/ready`, but
+> `jwt_verification` is `false` — `SUPABASE_JWT_JWK` is not set in its
+> environment, so every authenticated AI call currently returns 503. The ✅ column
+> above describes the architecture; it becomes true for a demo the moment that
+> variable is set. Verify with the commands at the end of this section before you
+> record.
+
+The one visible gap by design is real-time co-editing. Hocuspocus keeps the authoritative
+Y.Doc in memory over a long-lived WebSocket, which serverless cannot host, so the
+editor waits 5s, shows an amber **"Local Only"** badge, and falls back to reading
+and writing `yjs_state` directly against Supabase. Edits still save and survive a
+reload — what is lost is live cursors and simultaneous editing.
+
+**Do not apologise for that badge on camera — demo it.** It is the designed
+degradation: the system tells the clinician it is not collaborating right now
+instead of silently dropping a colleague's edits. If you want to show live
+cursors and two cursors in one document, record that section against
+`http://localhost:3000` with `npm run dev:collab` running.
+
+> **Check both hosts before you record.** Two commands, ten seconds:
+>
+> ```bash
+> curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
+> ```
+>
+> `jwt_verification` must be `true`. If it is `false` the service is up and
+> reports `ready`, but every AI call returns `503 Authentication is not configured
+> on this service` — it fails closed, which is correct, and every AI moment in
+> Scenarios A and B will die on camera.
+>
+> ```bash
+> node scripts/verify_patient_isolation.mjs
+> ```
+>
+> All nine checks must pass. This is the guarantee Scenario C rests on.
 
 ## Before recording
 

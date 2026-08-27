@@ -25,19 +25,42 @@ sign-in, role-based access, the Glance View, the longitudinal timeline, threaded
 comments and `@mentions`, revision history with diff and revert, and patient
 isolation.
 
-**What needs local setup.** The FastAPI AI service and the Hocuspocus collab
-server are separate processes and are **not deployed** — `/api/ai/*` returns 404
-on the Vercel host. So these are local-only:
+**The AI service is deployed too.** FastAPI runs on Railway at
+`https://nightingaleaugust-3zme-production.up.railway.app`, so the AI features
+call a real service from the live host rather than a local one. The Hocuspocus
+collab server is **not** deployed — a WebSocket server holding long-lived
+connections does not fit Vercel's serverless model — so live cursors degrade to
+the "Local Only" fallback described below.
 
 | Feature | Live | Local |
 |---|---|---|
 | Sign-in, RBAC, patient isolation | ✅ | ✅ |
 | Glance View, timeline, comments, `@mentions` | ✅ | ✅ |
 | Revision history, diff, revert | ✅ | ✅ |
-| AI summaries and highlights | ❌ | ✅ |
-| Contradiction detection | ❌ | ✅ |
-| Ambient voice capture | ❌ | ✅ |
-| Live cursors (falls back to "Local Only") | ❌ | ✅ |
+| AI summaries and highlights | ✅ via Railway | ✅ |
+| Contradiction detection | ✅ via Railway | ✅ |
+| Ambient voice capture | ✅ via Railway | ✅ |
+| Multi-user co-editing, live cursors | ⚠️ "Local Only" | ✅ |
+
+**"Local Only" is a designed fallback, not a failure.** The editor waits 5s for
+the collab server, then switches to `unavailable`: it loads `yjs_state` from
+Supabase and keeps writing edits straight back to `care_notes`. Work is saved and
+survives reload — what is lost is *live cursors and simultaneous co-editing*, and
+the amber badge says so rather than pretending to be connected.
+
+> **Check before demoing.** Every AI endpoint requires a verified JWT, so the
+> Railway service needs `SUPABASE_JWT_JWK` (or `SUPABASE_JWT_SECRET`) in its
+> environment. Without it the service is up but answers `503 Authentication is
+> not configured on this service` — it fails closed, which is correct, but the
+> AI features will be dead. Confirm with:
+>
+> ```bash
+> curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
+> ```
+>
+> `jwt_verification` must read `true`. `NEXT_PUBLIC_AI_SERVICE_URL` must also be
+> set on Vercel **at build time** — it is inlined into the client bundle, so
+> changing it requires a redeploy, not just an env edit.
 
 Follow [Quick start](#quick-start) for the full feature set, or
 [DEMO_RUNBOOK.md](DEMO_RUNBOOK.md) for the exact startup sequence.
@@ -56,7 +79,7 @@ Follow [Quick start](#quick-start) for the full feature set, or
 | **AI Scribe** | Three interaction types written as `author_role='system'`, `author_id=NULL`, with provenance back to the session. |
 | **Ambient voice capture** | Record a consult in the browser → diarized transcript → PHI stripped → structured summary. Mock-first; spends no credits by default. |
 | **Clinical safety layer** | Verbatim extraction, deterministic risk floors, measured confidence + abstention, contradiction detection, patient-facing firewall, feedback-loop guards. |
-| **RBAC** | PostgreSQL Row Level Security across 8 tables. UI adapts; the database enforces. |
+| **RBAC** | PostgreSQL Row Level Security across 9 tables. UI adapts; the database enforces. |
 | **PHI redaction** | Presidio + spaCy + Singapore recognisers (NRIC/FIN incl. M series, SG phones, local name forms), strictly before any LLM call. |
 
 ---
@@ -120,8 +143,7 @@ cp .env.demo .env        # then fill in the values below
 | `ELEVENLABS_API_KEY` + `ELEVENLABS_LIVE_ENABLED` | live voice transcription (**optional**, metered) |
 | `TEST_*_EMAIL` / `TEST_*_PASSWORD` | the latency harness |
 
-**`frontend/.env.local`** — Next.js. These point at your **local** services;
-the Vercel deployment has no AI or collab service behind it:
+**`frontend/.env.local`** — Next.js, for local development:
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=...
@@ -130,6 +152,54 @@ SUPABASE_SERVICE_ROLE_KEY=...          # server-only; never NEXT_PUBLIC
 NEXT_PUBLIC_AI_SERVICE_URL=http://localhost:8000
 NEXT_PUBLIC_COLLAB_URL=ws://localhost:1234
 ```
+
+### Production environment
+
+Three hosts, three sets of variables. They are not interchangeable.
+
+**Vercel** (frontend). `NEXT_PUBLIC_*` values are **inlined into the client
+bundle at build time**, so editing one in the dashboard changes nothing until you
+redeploy:
+
+| Key | Value |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | the Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the anon/publishable key |
+| `SUPABASE_SERVICE_ROLE_KEY` | server-only; used by `/api/patients` and patient-login |
+| `NEXT_PUBLIC_AI_SERVICE_URL` | `https://nightingaleaugust-3zme-production.up.railway.app` |
+| `NEXT_PUBLIC_COLLAB_URL` | omit in production — absent means the "Local Only" fallback |
+
+**Railway** (AI service):
+
+| Key | Needed for |
+|---|---|
+| `SUPABASE_URL` | Supabase REST base for scribe ingestion |
+| `SUPABASE_SERVICE_ROLE_KEY` | writing `author_role='system'` entries |
+| `SUPABASE_JWT_JWK` *or* `SUPABASE_JWT_SECRET` | **verifying JWTs — without it every endpoint returns 503** |
+| `GROQ_API_KEY` | summarisation and highlight extraction |
+| `ELEVENLABS_API_KEY` | ambient voice transcription |
+| `ELEVENLABS_LIVE_ENABLED` | `true` to spend credits; unset means mock transcripts |
+
+Readiness is self-reporting — `GET /ready` returns each check by name:
+
+```bash
+curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
+```
+
+```json
+{"status":"ready","checks":{"groq_api_key":true,"supabase_url":true,
+ "supabase_service_key":true,"jwt_verification":true,"redaction_engine":true}}
+```
+
+`jwt_verification: false` is the one that silently breaks every AI feature: the
+service still reports `ready` (redaction and Groq are the critical checks) and
+still answers `/health`, but every authenticated call returns
+`503 Authentication is not configured on this service`. It fails closed, which is
+the right posture — but check this field, not just the status string.
+
+**Supabase** (database) needs no application variables. Apply
+`supabase/fix_live_grants.sql` once to an existing deployment; a fresh project
+gets everything from `supabase/migrations/001_foundation.sql`.
 
 > **Two env traps, both of which cost real debugging time:**
 >
@@ -151,8 +221,11 @@ migrations silently reverted earlier ones.
 If the schema is already deployed but PostgREST returns
 `42501 permission denied for table`, that deployment predates the grants block.
 Run **`supabase/fix_live_grants.sql`** in the Supabase SQL Editor. It is
-idempotent, also adds the clinical-safety columns, and ends with a verification
-query that should show `true` for all 8 tables.
+idempotent, adds the clinical-safety columns, and creates `care_note_assessments`
+— backfilling the clinical assessment out of `glance_cache` before stripping it,
+so a part-way failure cannot destroy it. Audit the result with
+**`supabase/verify_grants.sql`**, which should show `true` across all nine
+tables.
 
 ```bash
 ./scripts/seed.sh      # creates 8 auth users, seeds both clinics
@@ -343,7 +416,7 @@ Redacted 5 entities (MRN:1, NRIC:1, PERSON:2, PHONE:1) from 119 chars
 
 **At the database, in `supabase/migrations/001_foundation.sql`.** PostgreSQL Row
 Level Security is the enforcement point; the UI adapts to role but is never the
-control. All eight tables have RLS enabled.
+control. All nine tables have RLS enabled.
 
 **Grants** decide whether a role may touch a table at all; **policies** decide
 which rows it sees. `anon` receives schema usage only — every policy requires
@@ -393,15 +466,46 @@ other patients' records — a leak the historical migration chain actually carri
 `timeline_entries` is `author_id = auth.uid()`. A cross-role write does not fail
 in the UI — it changes no row.
 
-The shared care-note editor is **clinician-write**. Staff and admins see it
-read-only with a stated reason ("the care note is the clinician's section — add
-a staff note or comment below instead") rather than a silently inert field whose
-save would be refused. RLS is what enforces this; the UI simply stops staff
-typing into something that will be rejected.
+**Edit rights on the shared care note.** The intended rule is that the note body
+is the clinician's section: clinicians write it, staff contribute through timeline
+entries and comments instead. The editor enforces that in the UI, showing staff
+and admins a read-only surface with a stated reason ("the care note is the
+clinician's section — add a staff note or comment below instead") rather than a
+silently inert field.
 
-**Patients never receive the internal clinical assessment.** Risk flags,
-severity chips and open clinical actions are stripped in the server component
-before the payload reaches the browser — see
+Be precise about *where* that is enforced, because it is not RLS. The UPDATE
+policy on `care_notes` admits `clinician`, `staff` and `admin`:
+
+```sql
+CREATE POLICY "Care team can update care notes"
+  ON care_notes FOR UPDATE
+  USING (clinic_id = get_user_clinic_id()
+         AND get_user_role() IN ('clinician', 'staff', 'admin'));
+```
+
+That is deliberate, and it is the row-vs-column problem again. The note body
+(`yjs_state`) and the care plan (`glance_cache`) are **columns of the same row**,
+and staff genuinely own care-plan work — ticking off plan items is theirs to do.
+A policy is row-level, so it cannot grant one column and withhold the other.
+
+| Path | Gate | Staff can write the note body? |
+|---|---|---|
+| Browser → PostgREST | RLS `Care team can update care notes` | yes — RLS cannot separate the columns |
+| Browser → Hocuspocus → service-role | `COLLAB_WRITE_ROLES` in `collab-server/persistence.ts` | yes — `["clinician", "staff"]` |
+| Editor UI | read-only surface for staff/admin | no |
+
+So today the clinician-only rule is a **UI convention**, not an enforced
+boundary. Closing it properly means splitting the note body out of the row the
+care plan lives in — the same fix already applied to the clinical assessment (see
+below) — or narrowing `COLLAB_WRITE_ROLES` to `["clinician"]` and adding a
+column-scoped trigger. Documented as open rather than overstated.
+
+**Patients never receive the internal clinical assessment** — and this one *is*
+structurally enforced. The assessment lives in `care_note_assessments`, a table
+with three care-team policies and no patient policy, so a patient gets zero rows
+by any route including a direct API call with their own token. It previously lived
+in `care_notes.glance_cache`, where filtering it in the server component hid it
+from the page while leaving it readable — see
 [TECHNICAL_BRIEF.md §3](TECHNICAL_BRIEF.md).
 
 ### Where RLS is bypassed, and what replaces it
@@ -433,23 +537,87 @@ sunrise clinician  3     service role      11   (RLS bypassed)
 Tests run as the non-superuser `authenticated` role — a superuser bypasses RLS,
 which would make every access-control assertion pass vacuously.
 
+**Against a live deployment.** The suite proves the policies; it does not prove
+what got deployed. Two checks close that gap.
+
+```bash
+node scripts/verify_patient_isolation.mjs
+```
+
+Signs in as a real patient and a real clinician and asserts against the **API**,
+not the rendered page — a UI test would have passed for the entire period the
+assessment was exposed. Nine assertions: the patient gets zero rows from
+`care_note_assessments` by table and by `care_note_id`, no severity or confidence
+grading survives in `glance_cache`, no high/critical timeline entry is reachable,
+and — as the control — clinician and staff access is **intact**, so the checks
+cannot be satisfied by breaking the care team instead.
+
+It matches on the *shape* of a clinical judgement (`risk_level`, `confidence`,
+`status`) rather than on clinical words. A patient's own care plan legitimately
+reads "Consider nephrology consult if eGFR continues to decline" — that is an
+instruction written for them, and a keyword scan flags it wrongly.
+
+```
+All checks passed — the assessment is unreachable by the patient.
+```
+
+`supabase/verify_grants.sql`, run in the Supabase SQL editor, audits table-level
+grants and RLS state for every table in `public`, enumerated from `pg_class`:
+
+| table_name | authenticated_select | authenticated_insert | service_role_select | rls_enabled | policies |
+|---|---|---|---|---|---|
+| care_note_assessments | true | true | true | true | 3 |
+| care_notes | true | true | true | true | 4 |
+| timeline_entries | true | true | true | true | 7 |
+| *…nine tables* | | | | | |
+
+Enumerated rather than listed by hand on purpose: a fixed `IN (...)` list silently
+omits tables added later, and the omission renders identically to a pass — which
+is exactly how `care_note_assessments` went unchecked after it was added.
+
+Read the two together. A grant is the table-level door; RLS decides rows.
+`authenticated` holding SELECT on `care_note_assessments` is correct and expected
+— the patient still gets nothing, because no policy admits them. Only the API
+probe answers row visibility.
+
 ---
 
 ## Architecture
 
 ```
-Browser (Next.js 15, App Router)
-  ├── HTTPS ──→ Supabase        Auth · Postgres · RLS · Realtime
-  ├── WSS ────→ Hocuspocus      Yjs CRDT sync, JWT + role gate    :1234
-  └── HTTPS ──→ FastAPI         redaction → safety layer → Groq   :8000
-                                        └── ElevenLabs Scribe (optional)
+Browser
+  │
+  ├── HTTPS ──→ Next.js 15 (App Router)          Vercel
+  │               └── Server Components, RSC, route handlers
+  │
+  ├── HTTPS ──→ Supabase                          managed
+  │               Auth · PostgreSQL · RLS on 9 tables · Realtime
+  │
+  ├── HTTPS ──→ FastAPI                           Railway
+  │               redaction → safety layer → Groq
+  │               ├── Microsoft Presidio + spaCy (en_core_web_sm)
+  │               ├── Groq  openai/gpt-oss-20b
+  │               ├── ElevenLabs Scribe v2 (metered, off by default)
+  │               └── python-multipart (audio ingestion)
+  │
+  └── WSS ────→ Hocuspocus                        local only
+                  Yjs CRDT sync, JWT + role gate
+                  └── absent in production → "Local Only" fallback
 ```
 
-| Service | Path | Port | Dev command |
+| Service | Path | Production | Local |
 |---|---|---|---|
-| Frontend | `frontend/` | 3000 | `npm run dev:frontend` |
-| Collab server | `collab-server/` | 1234 | `npm run dev:collab` |
-| AI service | `ai-service/` | 8000 | `.venv/bin/uvicorn main:app --reload --port 8000` |
+| Frontend | `frontend/` | Vercel — [nightingale-august-frontend-6ktv.vercel.app](https://nightingale-august-frontend-6ktv.vercel.app) | `npm run dev:frontend` :3000 |
+| Database | `supabase/` | Supabase managed Postgres, 9 RLS tables | same project |
+| AI service | `ai-service/` | Railway — [nightingaleaugust-3zme-production.up.railway.app](https://nightingaleaugust-3zme-production.up.railway.app) | `.venv/bin/uvicorn main:app --reload --port 8000` |
+| Collab server | `collab-server/` | **not deployed** — degrades to "Local Only" | `npm run dev:collab` :1234 |
+
+**Why the collab server is not deployed.** Hocuspocus holds a stateful WebSocket
+per editing session and keeps the authoritative Y.Doc in memory. Vercel's
+serverless functions are short-lived and have no shared memory between
+invocations, so a CRDT authority cannot live there — it needs a long-running host
+with sticky sessions. Rather than fake it, the client detects the absent server
+and falls back to direct Supabase persistence with an honest badge.
 
 Full design rationale, failure modes and measured latency are in
 **[TECHNICAL_BRIEF.md](TECHNICAL_BRIEF.md)**.

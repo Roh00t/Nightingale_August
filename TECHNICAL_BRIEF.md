@@ -10,11 +10,22 @@ we know if it were wrong, and what happens when it is.
 
 **312 automated tests, runnable offline with no credentials.**
 
-**Live deployment:** https://nightingale-august-frontend-6ktv.vercel.app — the Next.js frontend against the live Supabase
-project. The FastAPI AI service and Hocuspocus collab server run as separate
-processes and are not deployed, so the AI safety layer described in §4 and the
-real-time sync in §1 are exercised locally and by the test suite rather than on
-that host.
+**Live deployment.** Three tiers, three hosts:
+
+| Tier | Host | URL |
+|---|---|---|
+| Frontend — Next.js 15 | Vercel | https://nightingale-august-frontend-6ktv.vercel.app |
+| Database — PostgreSQL, 9 RLS tables | Supabase | managed |
+| AI service — FastAPI | Railway | https://nightingaleaugust-3zme-production.up.railway.app |
+
+The Hocuspocus collab server is the one tier that is **not** deployed. It holds a
+stateful WebSocket per session with the authoritative Y.Doc in memory; serverless
+functions are short-lived and share no memory between invocations, so a CRDT
+authority cannot live there. The client detects its absence and degrades to
+single-user local mode — an amber "Local Only" badge, `yjs_state` loaded from and
+written straight back to Supabase. Edits persist and survive reload; what is lost
+is live cursors and simultaneous co-editing. §1 real-time sync is therefore
+exercised locally and by the suite; the §4 safety layer runs on Railway.
 
 ---
 
@@ -35,13 +46,13 @@ that host.
         │ HTTPS              │ WSS                     │ HTTPS + JWT
         ▼                    ▼                         ▼
 ┌───────────────┐   ┌──────────────────┐   ┌──────────────────────────────┐
-│   SUPABASE    │   │   HOCUSPOCUS     │   │   FASTAPI  :8000             │
+│   SUPABASE    │   │ HOCUSPOCUS local │   │  FASTAPI — Railway (prod)    │
 │               │   │      :1234       │   │                              │
 │ Auth (GoTrue) │   │ JWT verify (JWK  │   │  require_caller()  JWT gate  │
 │ Postgres      │   │  set, by kid)    │   │        │                     │
 │ ROW LEVEL     │   │ ROLE allowlist   │   │        ▼                     │
 │  SECURITY ◄───┼───┤  patient=REJECT  │   │  transcription.py  (mock 1st)│
-│ 8 tables      │   │  admin=readonly  │   │   └─ ElevenLabs Scribe v2    │
+│ 9 tables      │   │  admin=readonly  │   │   └─ ElevenLabs Scribe v2    │
 │ Realtime      │   │ clinic match     │   │      2 switches required     │
 └───────────────┘   │ Yjs CRDT sync    │   │        │                     │
         ▲           │ create_note_     │   │        ▼                     │
@@ -143,7 +154,7 @@ once. One definition per policy.
 
 ### RBAC at the database
 
-RLS on all eight tables; the UI adapts to role but is never the control. Clinic
+RLS on all nine tables; the UI adapts to role but is never the control. Clinic
 scoping runs through `SECURITY DEFINER` helpers with pinned `search_path`,
 because a nested `EXISTS` on an RLS-protected table re-evaluates that table's RLS
 and raises `42501`.
@@ -158,8 +169,42 @@ Patients cannot read AI-scribed notes, enforced twice: entries are
 `visibility='internal'`, *and* the patient SELECT policy excludes those entry
 types by name. A mis-marked entry stays hidden.
 
-Staff and clinicians cannot overwrite each other: the only UPDATE policy is
-`author_id = auth.uid()`. A cross-role write changes zero rows.
+Staff and clinicians cannot overwrite each other **on timeline entries**: the
+only UPDATE policy there is `author_id = auth.uid()`. A cross-role write changes
+zero rows.
+
+**Edit rights on the care note itself are weaker than the UI implies**, and the
+distinction is worth stating precisely rather than claiming a guarantee that does
+not hold. The intent is that the note body belongs to the clinician and staff work
+through timeline entries and comments. The editor enforces exactly that — staff
+and admins get a read-only surface with a stated reason. The database does not:
+
+```sql
+CREATE POLICY "Care team can update care notes"
+  ON care_notes FOR UPDATE
+  USING (clinic_id = get_user_clinic_id()
+         AND get_user_role() IN ('clinician', 'staff', 'admin'));
+```
+
+That is the row-versus-column problem again, in a second place. The note body
+(`yjs_state`) and the care plan (`glance_cache`) are columns of the *same row*,
+and staff legitimately own care-plan work — ticking off plan items is theirs. A
+row-level policy cannot grant one column and withhold the other, so admitting
+staff to the care plan admits them to the note body as well.
+
+| Write path | Gate | Staff reach the note body? |
+|---|---|---|
+| Browser → PostgREST | RLS `Care team can update care notes` | yes |
+| Browser → Hocuspocus → service-role | `COLLAB_WRITE_ROLES` | yes — `["clinician", "staff"]` |
+| Editor UI | read-only surface for staff/admin | no |
+
+So clinician-only authorship of the note body is currently a **UI convention**.
+Closing it means either splitting the body into its own table — the fix already
+applied to the clinical assessment below — or narrowing `COLLAB_WRITE_ROLES` to
+`["clinician"]` and adding a column-scoped `BEFORE UPDATE` trigger that rejects a
+staff write touching `yjs_state`. The first is cleaner and matches the pattern the
+codebase already uses; both are more than a documentation change, so this is
+recorded as open rather than quietly overstated.
 
 **Where RLS is bypassed** (service-role key), tenant and role checks are
 re-implemented in code — AI scribe ingestion, the collab server, and account
@@ -677,7 +722,7 @@ node scripts/measure_glance.mjs
 
 | Suite | Tests | Proves |
 |---|---|---|
-| `test_rbac_scope` | 12 | role isolation, cross-clinic denial, cross-role writes |
+| `test_rbac_scope` | 18 | role isolation, cross-clinic denial, cross-role writes |
 | `test_revision_history` | 16 | version increment, revert restores state, metadata-only audit |
 | `test_highlight_provenance` | 21 | pointer schema, span resolution, referential integrity |
 | `test_concurrent_edits` | 19 | non-destructive merge, deterministic resolution, atomic versioning |
@@ -694,6 +739,32 @@ The suites build their own PostgreSQL cluster from the migration file and run as
 a non-superuser. A superuser bypasses RLS, which would make every access-control
 assertion pass while proving nothing — `test_meta_rls_sanity` exists to catch
 exactly that, by asserting the same query returns different row counts per role.
+
+### Verifying the deployment, not just the policies
+
+The suite proves what the migration says. It cannot prove what is actually
+running in production, and the two diverged once already.
+
+`scripts/verify_patient_isolation.mjs` signs in as a real patient and a real
+clinician against a live host and asserts through the **API** rather than the
+rendered page — a UI assertion would have passed throughout the window the
+assessment was exposed. Nine checks: zero rows from `care_note_assessments` by
+table and by id, no severity or confidence grading left in `glance_cache`, no
+high/critical timeline entry reachable, and the care-team control proving
+clinician and staff access still works, so the checks cannot be satisfied by
+breaking the care team instead.
+
+`supabase/verify_grants.sql` audits grants, RLS state and policy count for every
+table in `public`, enumerated from `pg_class` rather than named in a list — an
+omitted table renders identically to a passing one, which is precisely how
+`care_note_assessments` escaped an earlier grants review.
+
+The two answer different questions and are easy to confuse. A grant is the
+table-level door; RLS decides rows. `authenticated` holding SELECT on
+`care_note_assessments` is correct and expected — the patient still receives
+nothing, because no policy admits them. Only the API probe settles row
+visibility, and only the SQL audit settles whether PostgREST can open the table
+at all.
 
 **Adversarial evaluation found nine further defects**, every one of which would
 have shipped looking correct:
