@@ -3,6 +3,16 @@
 Every command below is copy-pasteable. Every claim was verified against this
 repo, not assumed.
 
+## Deployment vs local
+
+**Live:** https://nightingale-august-frontend-6ktv.vercel.app — frontend + Supabase. Good for handing someone a link to click
+through sign-in, RBAC and the record.
+
+**This runbook is for local**, because the AI service and collab server are not
+deployed. Every AI feature and live-cursor step below requires all three
+processes running on your machine. Do not substitute the live URL into these
+commands.
+
 ## Read this first — four things that will break the demo
 
 1. **Never `source .env`.** `SUPABASE_JWT_JWK` holds JSON; the shell strips its

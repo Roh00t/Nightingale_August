@@ -10,6 +10,12 @@ we know if it were wrong, and what happens when it is.
 
 **306 automated tests, runnable offline with no credentials.**
 
+**Live deployment:** https://nightingale-august-frontend-6ktv.vercel.app — the Next.js frontend against the live Supabase
+project. The FastAPI AI service and Hocuspocus collab server run as separate
+processes and are not deployed, so the AI safety layer described in §4 and the
+real-time sync in §1 are exercised locally and by the test suite rather than on
+that host.
+
 ---
 
 ## 1. Architecture

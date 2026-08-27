@@ -5,6 +5,17 @@ rather than a feature: what the system does when something is *wrong*.
 
 ---
 
+## Record locally, not against the live URL
+
+The deployment at **https://nightingale-august-frontend-6ktv.vercel.app** is the frontend against live Supabase. The FastAPI
+AI service and the Hocuspocus collab server are **not deployed**, so on the live
+host every AI moment in this script fails: no summaries, no highlights, no
+contradiction badges, no ambient capture, and the editor stays on "Local Only".
+
+Scenarios A and B both turn on those features, so **record against
+`http://localhost:3000` with all three services running.** Use the live URL when
+someone wants to click through the record and RBAC without installing anything.
+
 ## Before recording
 
 ```bash
@@ -49,7 +60,8 @@ to exact words, and the risk badge is not the model's opinion.
 
 ### A1. Glance View (60s)
 
-1. Log in as `clinician@nightingale.demo`. Open **Alice Wong**.
+1. Open **http://localhost:3000**, log in as `clinician@nightingale.demo`, and
+   open **Alice Wong**.
 2. Start a stopwatch as the page paints. Read aloud the three things you learn:
    - cardiology referral pending since Jan 15,
    - eGFR declining 62 → 45,

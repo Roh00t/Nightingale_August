@@ -10,6 +10,38 @@ and a maker-checker firewall on anything a patient will read.
 
 **306 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
 
+## ▶ Live demo
+
+### **https://nightingale-august-frontend-6ktv.vercel.app**
+
+Sign in with any account from the [demo accounts table](#demo-accounts) —
+password `demo-password-123`. Start as `clinician@nightingale.demo`, then open a
+second window as `patient@nightingale.demo` to see the same record from both
+sides.
+
+**What the deployment covers.** The Vercel build is the Next.js frontend against
+the live Supabase project, so everything backed by the database works there:
+sign-in, role-based access, the Glance View, the longitudinal timeline, threaded
+comments and `@mentions`, revision history with diff and revert, and patient
+isolation.
+
+**What needs local setup.** The FastAPI AI service and the Hocuspocus collab
+server are separate processes and are **not deployed** — `/api/ai/*` returns 404
+on the Vercel host. So these are local-only:
+
+| Feature | Live | Local |
+|---|---|---|
+| Sign-in, RBAC, patient isolation | ✅ | ✅ |
+| Glance View, timeline, comments, `@mentions` | ✅ | ✅ |
+| Revision history, diff, revert | ✅ | ✅ |
+| AI summaries and highlights | ❌ | ✅ |
+| Contradiction detection | ❌ | ✅ |
+| Ambient voice capture | ❌ | ✅ |
+| Live cursors (falls back to "Local Only") | ❌ | ✅ |
+
+Follow [Quick start](#quick-start) for the full feature set, or
+[DEMO_RUNBOOK.md](DEMO_RUNBOOK.md) for the exact startup sequence.
+
 ---
 
 ## What's in it
@@ -88,7 +120,8 @@ cp .env.demo .env        # then fill in the values below
 | `ELEVENLABS_API_KEY` + `ELEVENLABS_LIVE_ENABLED` | live voice transcription (**optional**, metered) |
 | `TEST_*_EMAIL` / `TEST_*_PASSWORD` | the latency harness |
 
-**`frontend/.env.local`** — Next.js:
+**`frontend/.env.local`** — Next.js. These point at your **local** services;
+the Vercel deployment has no AI or collab service behind it:
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=...
@@ -144,6 +177,7 @@ editor degrades to **"Local Only"** — an amber indicator, with edits saving
 directly to Supabase. This is a designed fallback, not a failure.
 
 ### Demo accounts
+<a id="demo-accounts"></a>
 
 All use `demo-password-123` (written by `scripts/seed.sh`, which is
 authoritative).
