@@ -83,14 +83,19 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Synthetic data only
 - [x] TLS/at-rest — documented in the technical brief with a per-layer table
 
-### 6. Micro-tests — **113 passing, 0 failing, no credentials required**
+### 6. Micro-tests — **306 passing, 0 failing, no credentials required**
 - [x] `test_rbac_scope` — 12, executing against real RLS
-- [x] `test_revision_history` — 14, incl. revert + metadata-only audit assertions
+- [x] `test_revision_history` — 16, incl. non-tautological revert + metadata-only audit
 - [x] `test_highlight_provenance` — 21 (12 offline schema + 9 DB)
-- [x] `test_concurrent_edits` — 29, incl. deterministic resolution + atomic versioning
+- [x] `test_concurrent_edits` — 19, deterministic resolution + atomic versioning
 - [x] `test_self_learning_importance` — 11, drives the real scorer end to end
-- [x] `test_phi_redaction` — 33 zero-leakage assertions
-- [x] `test_meta_rls_sanity` — guards against vacuous greens
+- [x] `test_phi_redaction` — 41 zero-leakage assertions
+- [x] `test_clinical_safety` — 64, the guardrails between the LLM and the record
+- [x] `test_adversarial_safety` — 53, injection, obfuscation, multicultural PHI
+- [x] `test_transcribe_endpoint` — 33, voice pipeline + credit guardrails + filing
+- [x] `test_conflicts_endpoint` — 26, incl. titration false-positive suppression
+- [x] `test_highlights_pipeline_safety` — 7, safety layer inside the real route
+- [x] `test_meta_rls_sanity` — 3, guards against vacuous greens
 
 ### 7. Deliverables
 - [x] Git repo with clear commit history (3 commits, descriptive)
@@ -101,15 +106,16 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [ ] Demo video (Scenarios A/B/C)
 
 ### 8. Bonus
-- [x] Ambient voice capture — mock-first, 120s cap, 5MB limit, two-key credit guardrail, 24 tests
+- [x] Ambient voice capture — mock-first, 120s cap, 5MB limit, two-key credit guardrail, 33 tests
 - [x] Data decay — built, needs documenting
 
 ---
 
 ## Work plan
 
-### Phase 3 — Make the tests real ✅ COMPLETE (commits c43d9f2, next)
-113 tests passing with zero credentials configured.
+### Phase 3 — Make the tests real ✅ COMPLETE (commits c43d9f2, 7c8fd8e)
+113 tests passing at that point, with zero credentials configured. *(Historical —
+the suite is 306 today; see the checklist above.)*
 
 - Build `tests/conftest.py` fixtures around an ephemeral Postgres: `initdb` → apply
   `supabase/migrations/001_foundation.sql` → shim `auth.users` + `auth.uid()` → seed via the
@@ -202,7 +208,7 @@ npm run dev   # fix dev:ai to use .venv/bin/uvicorn first
 Built mock-first. `POST /api/ai/transcribe`, `VoiceCapture.tsx`, PWA manifest.
 120-second hard stop, 5MB limit enforced before anything metered runs, and live
 ElevenLabs calls gated behind TWO independent switches so no test can reach the
-meter. 24 tests, zero credits spent. The `elevenlabs` SDK is an optional extra
+meter. 33 tests, zero credits spent. The `elevenlabs` SDK is an optional extra
 imported lazily, so the suite runs with it absent.
 
 ### 1b. Original risk text (superseded)
@@ -289,4 +295,33 @@ that is not currently live. Stated plainly rather than presented as shipped.
 Clinical contradictions between authors are a different concern and **are**
 live, at `POST /api/ai/conflicts`.
 
-**Suite: 289 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
+**Suite: 306 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
+
+---
+
+## Documentation audit — 27 Aug 2026
+
+All project Markdown verified against the running code. Corrections:
+
+- Test counts aligned to **306** across README, TECHNICAL_BRIEF, TESTS,
+  DEMO_SCRIPT, DEMO_RUNBOOK and PROGRESS. Per-suite figures re-derived from
+  `pytest --collect-only`, not copied forward.
+- **TECHNICAL_BRIEF §3** gains *Patient data isolation at the Server Component
+  boundary* — RLS lets a patient read their own `care_notes` row, which does not
+  make `glance_cache.top_items` patient-facing.
+- **§4.4** documents the three false-positive filters: same-author revision,
+  deduplication keyed on **value** rather than `(author, value)`, and titration
+  suppression by prescriber-value matching rather than dose ordering.
+- **§4.7** documents server-side filing: why `author_id=NULL` makes the write
+  impossible from any browser session, and the four checks re-applied by hand
+  because the service-role key bypasses RLS.
+- **§4.8** is new: `jsonb` snapshots holding real note text, additive revert, and
+  why the old revert test was tautological.
+- Role tables now distinguish care-note editing (clinician-write) from timeline
+  notes, comments and action handling (staff and clinician).
+
+`USER_GUIDE.md` does not exist and was never created — the user-manual document
+was dropped in favour of fixing the five audit findings. `CLAUDE.md` and
+`guardrails.md` retain their historical "40 tests error at fixture setup"
+references **deliberately**: those describe the inherited starting state that
+motivated the guardrails, not the current suite.

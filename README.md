@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**298 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
+**306 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
 
 ---
 
@@ -60,7 +60,7 @@ AI service will not report ready without it.
 cd ai-service && .venv/bin/python -m pytest tests/ -v
 ```
 
-Expect **289 passed**. The suites build an ephemeral PostgreSQL cluster, apply
+Expect **306 passed**. The suites build an ephemeral PostgreSQL cluster, apply
 `supabase/migrations/001_foundation.sql` verbatim, and seed both demo clinics.
 No cloud project, no Docker, no credentials, and no metered API calls.
 
@@ -344,6 +344,10 @@ other patients' records — a leak the historical migration chain actually carri
 | Own `patient_message` readback | ✅ | ✅ | ✅ | ✅ |
 | Edit another role's entry | ❌ | ❌ | ❌ | ❌ |
 | Archived entries | ❌ | ❌ | ✅ | ✅ |
+| Edit the shared care note | ❌ | 👁 read-only | ✅ | 👁 read-only |
+| Add timeline notes / comments | ❌ | ✅ | ✅ | ❌ |
+| Assign / defer open actions | ❌ | ✅ | ✅ | ❌ |
+| Resolve contradictions, revert versions | ❌ | ❌ | ✅ | ❌ |
 | Real-time editing (WebSocket) | ❌ rejected | ✅ write | ✅ write | 👁 read-only |
 | Voice capture mode | `patient_session` | `nurse_consult` | `doctor_consult` | `doctor_consult` |
 
@@ -354,6 +358,17 @@ other patients' records — a leak the historical migration chain actually carri
 **Staff and clinicians cannot overwrite each other.** The only UPDATE policy on
 `timeline_entries` is `author_id = auth.uid()`. A cross-role write does not fail
 in the UI — it changes no row.
+
+The shared care-note editor is **clinician-write**. Staff and admins see it
+read-only with a stated reason ("the care note is the clinician's section — add
+a staff note or comment below instead") rather than a silently inert field whose
+save would be refused. RLS is what enforces this; the UI simply stops staff
+typing into something that will be rejected.
+
+**Patients never receive the internal clinical assessment.** Risk flags,
+severity chips and open clinical actions are stripped in the server component
+before the payload reaches the browser — see
+[TECHNICAL_BRIEF.md §3](TECHNICAL_BRIEF.md).
 
 ### Where RLS is bypassed, and what replaces it
 
@@ -410,22 +425,36 @@ Full design rationale, failure modes and measured latency are in
 ## Testing
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 298 tests
-cd frontend && npx tsc --noEmit && npm run build
-cd collab-server && npx tsc --noEmit
-node scripts/measure_glance.mjs --n 100                 # glance P95
+npm test                     # 306 pytest tests (uses ai-service/.venv)
+npm run typecheck            # tsc --noEmit across frontend + collab-server
+npm run build                # Next.js production build
+node scripts/measure_glance.mjs --n 100    # glance P95, needs the app running
 ```
+
+Or directly:
+
+```bash
+cd ai-service && .venv/bin/python -m pytest tests/ -v
+cd frontend && npx tsc --noEmit
+cd collab-server && npx tsc --noEmit
+```
+
+> There is **no frontend unit-test suite.** Vitest and Testing Library are
+> installed but no `.test.tsx` files exist, so the previous `test:frontend`
+> script always exited 1; it has been removed rather than left as a command that
+> cannot pass. Frontend correctness is covered by `tsc --noEmit`, the production
+> build, and the backend suites that exercise the same API contracts.
 
 | Suite | Tests | Covers |
 |---|---|---|
 | `test_clinical_safety.py` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
 | `test_adversarial_safety.py` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS probes |
 | `test_phi_redaction.py` | 41 | zero PHI leakage; clinical values preserved |
-| `test_transcribe_endpoint.py` | 33 | ambient voice pipeline, payload limits, credit guardrails |
+| `test_transcribe_endpoint.py` | 33 | ambient voice pipeline, payload limits, credit guardrails, server-side filing |
+| `test_conflicts_endpoint.py` | 26 | contradiction detection, titration suppression, JWK-set selection, auth failure modes |
 | `test_highlight_provenance.py` | 21 | pointer schema, span resolution, referential integrity |
-| `test_conflicts_endpoint.py` | 20 | contradiction detection, JWK-set selection, auth failure modes |
 | `test_concurrent_edits.py` | 19 | non-destructive merge, deterministic resolution, atomic versioning |
-| `test_revision_history.py` | 14 | version increment, revert, metadata-only audit |
+| `test_revision_history.py` | 16 | version increment, non-tautological revert, metadata-only audit |
 | `test_rbac_scope.py` | 12 | role isolation, cross-clinic denial, cross-role writes |
 | `test_self_learning_importance.py` | 11 | learning moves scores; tenant isolation holds |
 | `test_highlights_pipeline_safety.py` | 7 | the safety layer runs *inside* the real route |

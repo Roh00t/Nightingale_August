@@ -10,7 +10,7 @@ rather than a feature: what the system does when something is *wrong*.
 ```bash
 # 1. Verify the whole suite is green — this is the claim the demo rests on
 cd ai-service && .venv/bin/python -m pytest tests/ -q
-# expect: 177 passed
+# expect: 306 passed
 
 # 2. Seed both clinics
 cd .. && ./scripts/seed.sh

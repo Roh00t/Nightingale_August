@@ -1,10 +1,19 @@
 # Nightingale — Test Documentation
 
-**298 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**306 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v
+npm test                                              # from the repo root
+cd ai-service && .venv/bin/python -m pytest tests/ -v # or directly
 ```
+
+> `npm test` previously invoked a bare `pytest`, which resolves to a system
+> Python without the project's dependencies and failed with
+> `ModuleNotFoundError: No module named 'psycopg'`. It now uses the venv
+> interpreter — the same class of bug as `npm run dev:ai`.
+>
+> There is no frontend unit-test suite; `tsc --noEmit` and the production build
+> cover the TypeScript side.
 
 Everything runs offline. The database-backed suites build their own PostgreSQL
 cluster from `supabase/migrations/001_foundation.sql`; the AI suites stub only
@@ -18,9 +27,9 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_phi_redaction`](#3-phi-redaction--41) | 41 | No PHI reaches the LLM; no over-redaction |
 | [`test_transcribe_endpoint`](#4-ambient-voice-capture--33) | 33 | Voice pipeline, payload limits, credit guardrails, server-side filing |
 | [`test_highlight_provenance`](#5-highlight-provenance--21) | 21 | Every claim resolves to a source span |
-| [`test_conflicts_endpoint`](#6-clinical-contradictions--20) | 20 | Cross-author contradiction detection |
+| [`test_conflicts_endpoint`](#6-clinical-contradictions--26) | 26 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
-| [`test_revision_history`](#8-revision-history--14) | 14 | Versioning, revert, metadata-only audit |
+| [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
 | [`test_rbac_scope`](#9-rbac--12) | 12 | Role and tenant isolation at the database |
 | [`test_self_learning_importance`](#10-self-learning--11) | 11 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
@@ -233,7 +242,7 @@ Invalid and reversed spans are rejected; an absent snippet reports `(0,0)` —
 
 ---
 
-## 6. Clinical contradictions — 20
+## 6. Clinical contradictions — 26
 
 `tests/test_conflicts_endpoint.py` · FastAPI TestClient
 
@@ -245,6 +254,13 @@ other did not. The port was deleted.
 Dosage and allergy contradictions across authors, allergy ranked first, both
 verbatim quotes with attribution. Spelled-out dosages normalise before
 comparison. Same-author revision is not a conflict unless explicitly requested.
+
+**Six tests cover false-positive suppression**, added after the engine flagged
+Alice Wong's `5mg → 10mg` titration as an active conflict carrying eight
+assertions (seven of them duplicate `10mg`). They assert that prescriber
+titration is suppressed in both directions, that repeated identical values
+deduplicate to one claim per distinct value, and — critically — that a value the
+prescriber never asserted still fires, whatever the dose ordering.
 The response contains no `winner` or `resolved_value` field — the system reports
 the delta and never arbitrates. Logs carry counts, never quotes.
 
@@ -274,7 +290,7 @@ sentinel string into a uuid FK.
 
 ---
 
-## 8. Revision history — 14
+## 8. Revision history — 16
 
 `tests/test_revision_history.py` · database
 
@@ -288,11 +304,17 @@ free of seeded clinical strings, read with RLS bypassed so it sees every row —
 an audit trail that quotes clinical text becomes a second, less-protected copy
 of the record.
 
-> **Found during verification:** the UI revert path omitted `version_number` — a
-> `NOT NULL` column with no default — so every revert failed `23502`, and the
-> error was never checked. Content reverted while the audit trail silently
-> gapped, exactly where it matters most. Now uses the atomic RPC and surfaces
-> failure.
+> **Two defects found here.** The UI revert path omitted `version_number` — a
+> `NOT NULL` column with no default — so every revert failed `23502` and the
+> error was never checked: content reverted while the audit trail silently
+> gapped. And the revert *test itself was tautological*, inserting
+> `content_snapshot = old["content_snapshot"]` then asserting the row equalled
+> it. It proved the database stored what it was handed, and passed for months
+> while snapshots held unrestorable descriptions like "Added follow-up notes".
+>
+> Snapshots now hold the actual note text as `jsonb`. The test compares three
+> distinct states, asserts they differ before reverting, and rejects snapshots
+> that read like changelog entries.
 
 ---
 
@@ -378,6 +400,9 @@ Every one would have shipped looking correct.
 | 15 | Malformed token returned 500/503 instead of 401 | Auth failure-mode tests |
 | 16 | `001_foundation.sql` granted no table privileges — the deployed app could not read a row | Live benchmark |
 | 17 | Ambient captures could never be filed from the browser — `author_id=NULL` cannot satisfy any INSERT policy, for **any** role | Live demo |
+| 18 | Patient portal rendered the internal clinical risk assessment (CRITICAL/HIGH flags) written about that patient | Audit |
+| 19 | Contradiction engine flagged dose titration and rendered "10mg vs 10mg vs 10mg" — dedup keyed on author, not value | Audit |
+| 20 | Revert test was tautological; snapshots held change descriptions that could not be restored | Audit |
 
 ---
 

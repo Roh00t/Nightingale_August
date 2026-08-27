@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**298 automated tests, runnable offline with no credentials.**
+**306 automated tests, runnable offline with no credentials.**
 
 ---
 
@@ -95,6 +95,7 @@ clinics ─┬─< profiles ──────────────< interact
                  │              importance_score · safety_metadata
                  │
                  └─< note_versions  UNIQUE(care_note_id, version_number)
+                        content_snapshot jsonb — the ACTUAL note text
 ```
 
 **Three quantities, never collapsed into one.** The schema keeps them in
@@ -177,6 +178,35 @@ client bundle. And redaction maps, which hold the reverse mapping from
 placeholder back to real PHI, are held in a bounded in-process store with a TTL
 and are never serialisable into a response; the `/api/ai/redact` response model
 exposes counts only, asserted by test.
+
+### Patient data isolation at the Server Component boundary
+
+RLS correctly lets a patient read their own `care_notes` row. That does not make
+every column patient-facing. `glance_cache.top_items` holds the **internal
+clinical assessment** — risk levels, severity chips (`CRITICAL`, `HIGH`),
+confidence, and open clinical actions such as "eGFR declining 62 → 45". Showing
+it in the patient portal exposed a clinician's risk judgement to the patient it
+was written about.
+
+The fix is at the **server boundary, not in the UI**. `/patients/[id]` is a
+server component: it resolves the viewer's role from their session and strips the
+internal fields before the payload crosses to the client, so they are absent from
+the RSC stream and the browser bundle entirely. Filtering inside a component
+would have left the data readable in page source — which is UI hiding, not
+enforcement.
+
+| Field | Patient | Care team |
+|---|---|---|
+| `glance_cache.care_plan_score`, `care_plan_items`, `last_visit` | ✅ | ✅ |
+| `glance_cache.top_items` (risk flags, severity, open actions) | ❌ stripped server-side | ✅ |
+| `changes_since_last_visit` | ❌ stripped server-side | ✅ |
+| Raw AI-scribed entries | ❌ excluded by RLS, twice | ✅ |
+| Internal comments, highlights, versions | ❌ no policy admits them | ✅ |
+| Contradiction badges | ❌ never rendered | ✅ |
+
+`SunshineBlock` independently refuses to render internal flags for a patient
+role. Two checks, because the consequence of missing one is showing a patient a
+risk judgement written about them.
 
 ### PHI redaction — an accuracy control, not only a privacy one
 
@@ -298,9 +328,41 @@ allergy contradictions rank **critical**, dosage **high**.
 manufacture false certainty about a dosing decision. It surfaces the delta with
 both quotes side by side and states that a clinician must resolve it.
 
-Two things deliberately *not* flagged, because they would be noise: a single
-author revising their own note over time (a correction), and vitals differing
-across visits (the timeline working as intended).
+**Three filters remove distinct classes of false positive**, because a badge
+that fires on non-events trains a care team to ignore it:
+
+*Same-author revisions.* One clinician amending their own note is a correction.
+
+*Repeated identical values.* Deduplication keys on the **value**, not on
+`(author, value)`. Eight people each recording `10mg` is eight authors
+*agreeing*; rendering that as "10mg vs 10mg vs 10mg…" makes unanimity look like
+eight-way disagreement and buries the single value that actually differs. One
+representative claim survives per distinct value — the earliest, since that is
+who first committed to it — and `agreed_by` records how many others concurred so
+attribution is not lost.
+
+*Dose titration.* Alice Wong's Lisinopril went `5mg → 10mg` because her clinician
+increased it. That is a **change**, not a disagreement.
+
+The titration rule deliberately does **not** ask "is the lower dose older?".
+That would hide a genuine de-escalation error while still flagging ordinary
+tapering — backwards, since dose *direction* carries no information about whether
+two people disagree. It asks instead: **did anyone assert a value the prescriber
+never did?**
+
+| Scenario | Verdict |
+|---|---|
+| Clinician `5mg` → `10mg`, echoed by staff and the scribe | titration — suppressed |
+| Clinician `10mg` → `5mg` (tapering), echoed by staff | titration — suppressed |
+| Clinician `10mg`, nurse records `100mg` | **conflict** — a value never prescribed |
+| `10mg` → `5mg` → `10mg` interleaved | **conflict** — the record contradicts itself |
+
+Against the live seeded timeline this took the engine from one conflict carrying
+eight assertions (`5mg` plus seven duplicate `10mg`) to zero, while every genuine
+contradiction above still fires.
+
+*Vitals* are excluded entirely: a blood pressure differing between April and
+October is the timeline working as intended.
 
 Edit-level conflicts are separate and *do* resolve, deterministically: role
 authority → recency → edit id. The id tie-break exists so two clients resolving
@@ -404,9 +466,58 @@ transcript is a working artefact, and there is no reason to ship identifiers
 twice in one response. Both directions are asserted by test so the asymmetry
 cannot drift into an accident.
 
+**Filing happens server-side, and it has to.** Every INSERT policy on
+`timeline_entries` requires `author_id = auth.uid()`, while an AI-scribed entry
+carries `author_role='system'` with `author_id = NULL`. `NULL` cannot equal a
+uuid, so the write is impossible from a browser session for **every** role —
+clinician and admin fail exactly as staff does. That is the policy working: a
+session able to write `author_role='system'` could forge a note attributed to the
+AI scribe.
+
+So `/api/ai/transcribe` accepts an optional `care_note_id` and performs the write
+itself with the service-role key, which is the only credential that can produce a
+system-authored row. Because that key bypasses RLS, the checks RLS would have
+applied are re-implemented in the handler (§3, S3):
+
+| Check | Enforced by |
+|---|---|
+| Care note belongs to the caller's clinic | `resolve_care_note()` — a foreign note returns **404**, not 403, so it cannot be probed for existence |
+| A patient may only file to their **own** care note | explicit `patient_id` comparison — clinic match alone would let them write into a peer's record |
+| The capture mode matches the caller's role | patients are restricted to `patient_session` |
+| Accountable human origin | `captured_by` / `captured_by_role` in metadata, since `author_id` is NULL |
+
 Whisper-style per-segment confidence feeds the ensemble term in §4.3, which is
 otherwise the weakest input; segment timestamps make provenance audio-anchored
 rather than text-anchored.
+
+### 4.8 Revision history and revert
+
+`note_versions.content_snapshot` is `jsonb` holding the **actual note text** at
+that point in time, plus a `sections` breakdown:
+
+```jsonc
+{ "text": "ASSESSMENT: eGFR dropped to 45 (from 58)…\nPLAN: Increased Lisinopril to 10mg…",
+  "sections": { "assessment": "…", "plan": "…" } }
+```
+
+It previously held a *description* of the change — `{"summary": "Added follow-up
+notes and medication"}` — which cannot be reverted **to**: restoring it would
+replace the note body with that sentence. The description belongs in
+`change_summary`, and now lives there alone.
+
+**Revert is additive.** Restoring v1 writes a *new* version carrying v1's
+content, so the superseded state stays recoverable and the revert itself is
+auditable. Numbering is allocated by `create_note_version()` under a
+per-care-note advisory lock, so a concurrent flush cannot collide on
+`UNIQUE(care_note_id, version_number)`.
+
+**The verification was tautological and is not any more.** The old test inserted
+`content_snapshot = old["content_snapshot"]` and asserted the inserted row
+equalled it — proving the database stored what it was handed, and nothing about
+revert. It passed for months while snapshots held unrestorable descriptions. The
+test now compares three distinct states, asserts the target and current differ
+*before* reverting, rejects snapshots that read like changelog entries, and
+confirms the superseded state survives.
 
 ## 5. Performance — the ≤300ms warm glance path
 
@@ -524,7 +635,7 @@ once live transcription is running.
 ## 7. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 177 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 306 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs
@@ -533,16 +644,16 @@ node scripts/measure_glance.mjs
 | Suite | Tests | Proves |
 |---|---|---|
 | `test_rbac_scope` | 12 | role isolation, cross-clinic denial, cross-role writes |
-| `test_revision_history` | 14 | version increment, revert restores state, metadata-only audit |
+| `test_revision_history` | 16 | version increment, revert restores state, metadata-only audit |
 | `test_highlight_provenance` | 21 | pointer schema, span resolution, referential integrity |
 | `test_concurrent_edits` | 19 | non-destructive merge, deterministic resolution, atomic versioning |
 | `test_self_learning_importance` | 11 | learning moves scores; tenant isolation holds |
-| `test_phi_redaction` | 33 | zero PHI leakage; clinical values preserved |
+| `test_phi_redaction` | 41 | zero PHI leakage; clinical values preserved |
 | `test_clinical_safety` | 64 | extraction, floors, abstention, conflicts, patient gate, feedback |
 | `test_meta_rls_sanity` | 3 | guards against a green suite that proves nothing |
 | `test_highlights_pipeline_safety` | 7 | the safety layer runs *inside the real route*, not just as modules |
 | `test_adversarial_safety` | 53 | prompt injection, obfuscated contradictions, multicultural PHI, RLS boundary probes |
-| `test_conflicts_endpoint` | 20 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
+| `test_conflicts_endpoint` | 26 | `/api/ai/conflicts`, JWK-set selection, auth failure modes |
 | `test_transcribe_endpoint` | 33 | ambient voice pipeline, payload limits, credit guardrails |
 
 The suites build their own PostgreSQL cluster from the migration file and run as
