@@ -325,3 +325,66 @@ was dropped in favour of fixing the five audit findings. `CLAUDE.md` and
 `guardrails.md` retain their historical "40 tests error at fixture setup"
 references **deliberately**: those describe the inherited starting state that
 motivated the guardrails, not the current suite.
+
+---
+
+## 28 Aug 2026 — patient data isolation, corrected
+
+The previous entry recorded patient isolation as solved at the Server Component
+boundary. It was not. Probing the **live** deployment with a real patient session
+returned the clinician's assessment straight from PostgREST:
+
+```
+GET /rest/v1/care_notes?select=glance_cache   (patient's own JWT)
+  {"text": "eGFR declining: 62 → 45 over 6 months",
+   "risk_level": "critical", "confidence": 0.92}
+  {"text": "Cardiology referral pending since Jan 15", "status": "unresolved"}
+```
+
+RLS is row-level, not column-level. `glance_cache` sits on a row the patient owns
+and must be able to read, so the whole column came back. Filtering it in the page
+hid it from the page; it never withheld it from the patient. The portal looked
+correct the entire time.
+
+**What changed**
+
+- `care_note_assessments` — new table holding `top_items` and
+  `changes_since_last_visit`, with three care-team policies and **no patient
+  policy**. Not a filter a patient fails: no rule exists that could admit them.
+- `001_foundation.sql` seeds the two halves separately; `glance_cache` keeps only
+  `care_plan_score` and `last_visit`.
+- `/patients/[id]` fetches the assessment only for clinician/staff/admin and
+  recomposes it into `glance_cache` in memory, so components are untouched.
+- `fix_live_grants.sql` carries the same change to a deployed database, back-
+  filling before stripping so a part-way failure cannot destroy the assessment.
+- `TECHNICAL_BRIEF.md` §3 rewritten — the old text claimed the component boundary
+  was enforcement rather than UI hiding, which the probe disproved.
+
+**Verification is against the API, not the page**, since a UI test would have
+passed throughout. Six assertions in `test_rbac_scope.py` plus
+`scripts/verify_patient_isolation.mjs` for live deployments. Both match on the
+*shape* of a clinical judgement — severity band, confidence, triage status — not
+on clinical words: a patient's own care plan legitimately reads "Consider
+nephrology consult if eGFR continues to decline", and a keyword scan flags that
+wrongly. The live verifier was confirmed non-vacuous: it reports 6 failures
+against the unfixed deployment.
+
+### Two steps that need a human
+
+1. **Local suite is blocked by the machine, not the code.** SysV shared memory is
+   exhausted host-wide — even a 56-byte `shmget` returns ENOMEM with zero
+   segments allocated, leaked accounting from the many ephemeral clusters this
+   session. `initdb` cannot run, so the 207 DB-backed tests cannot execute.
+   Clear it with `sudo sysctl -w kern.sysv.shmall=65536 kern.sysv.shmmax=16777216`
+   or a reboot. The 105 offline tests (redaction, clinical safety) pass.
+
+2. **The live database still leaks** until `supabase/fix_live_grants.sql` is run
+   in the Supabase SQL editor. DDL is not reachable through PostgREST and no
+   database password or CLI token is present in the repo. **Apply the SQL before
+   deploying the frontend** — the new page reads `care_note_assessments`, so a
+   frontend deployed first would show clinicians an empty Top Card.
+
+**Test count held at 306 deliberately.** 312 now collect, but only 105 have been
+verified in this session; the docs will be updated to a measured number once the
+full suite can run again. An unverified count is exactly what the accuracy audit
+was for.

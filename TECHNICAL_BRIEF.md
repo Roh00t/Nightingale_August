@@ -185,34 +185,62 @@ placeholder back to real PHI, are held in a bounded in-process store with a TTL
 and are never serialisable into a response; the `/api/ai/redact` response model
 exposes counts only, asserted by test.
 
-### Patient data isolation at the Server Component boundary
+### Patient data isolation — why the component boundary was not enough
 
 RLS correctly lets a patient read their own `care_notes` row. That does not make
-every column patient-facing. `glance_cache.top_items` holds the **internal
-clinical assessment** — risk levels, severity chips (`CRITICAL`, `HIGH`),
-confidence, and open clinical actions such as "eGFR declining 62 → 45". Showing
-it in the patient portal exposed a clinician's risk judgement to the patient it
-was written about.
+every column in it patient-facing. `glance_cache.top_items` held the **internal
+clinical assessment** — severity bands (`CRITICAL`, `HIGH`), model confidence,
+and open clinical actions such as "eGFR declining 62 → 45".
 
-The fix is at the **server boundary, not in the UI**. `/patients/[id]` is a
-server component: it resolves the viewer's role from their session and strips the
-internal fields before the payload crosses to the client, so they are absent from
-the RSC stream and the browser bundle entirely. Filtering inside a component
-would have left the data readable in page source — which is UI hiding, not
-enforcement.
+The first fix filtered those fields in the `/patients/[id]` server component, so
+they never entered the RSC stream. That was described here as enforcement rather
+than UI hiding. It was not. **RLS is row-level, not column-level.** A patient
+holding a normal session could skip the page and ask PostgREST directly:
+
+```
+GET /rest/v1/care_notes?select=glance_cache
+Authorization: Bearer <the patient's own access token>
+
+{"text": "eGFR declining: 62 → 45 over 6 months",
+ "risk_level": "critical", "confidence": 0.92}
+{"text": "Cardiology referral pending since Jan 15", "status": "unresolved"}
+```
+
+The component boundary hid the data from the page while leaving it readable by
+the patient. Recording this is the point: the portal looked correct throughout,
+and every UI-level test passed.
+
+The separation is now structural. The assessment lives in
+`care_note_assessments`, keyed by `care_note_id`, with three care-team policies
+and **no patient policy at all** — not a filter a patient fails, but the absence
+of any rule that could admit them. The consult page fetches it only for
+clinician/staff/admin and recomposes it into `glance_cache` in memory, so
+downstream components keep the shape they already expect.
 
 | Field | Patient | Care team |
 |---|---|---|
 | `glance_cache.care_plan_score`, `care_plan_items`, `last_visit` | ✅ | ✅ |
-| `glance_cache.top_items` (risk flags, severity, open actions) | ❌ stripped server-side | ✅ |
-| `changes_since_last_visit` | ❌ stripped server-side | ✅ |
+| `care_note_assessments.top_items` (severity, confidence, open actions) | ❌ no policy admits them | ✅ |
+| `care_note_assessments.changes_since_last_visit` | ❌ no policy admits them | ✅ |
 | Raw AI-scribed entries | ❌ excluded by RLS, twice | ✅ |
 | Internal comments, highlights, versions | ❌ no policy admits them | ✅ |
 | Contradiction badges | ❌ never rendered | ✅ |
 
-`SunshineBlock` independently refuses to render internal flags for a patient
-role. Two checks, because the consequence of missing one is showing a patient a
-risk judgement written about them.
+Verification runs against the **API**, not the rendered page, because a UI test
+would have passed for as long as the data was exposed. Six assertions in
+`test_rbac_scope.py` cover the patient path and the care-team control, so a later
+change cannot satisfy them by breaking clinician access;
+`scripts/verify_patient_isolation.mjs` runs the same checks against a live
+deployment.
+
+Both look for the *shape* of a clinical judgement — a severity band, a
+confidence, a triage status — rather than for clinical words. A patient's own
+care plan legitimately reads "Consider nephrology consult if eGFR continues to
+decline"; that is an instruction written for them, and a keyword scan flags it
+wrongly.
+
+`SunshineBlock` still refuses to render internal flags for a patient role. It is
+now defence in depth behind a real control, rather than the control itself.
 
 ### PHI redaction — an accuracy control, not only a privacy one
 
