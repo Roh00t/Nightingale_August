@@ -180,7 +180,8 @@ class PgHarness:
         with psycopg.connect(self.dsn, autocommit=True) as conn:
             conn.execute(
                 "TRUNCATE interaction_log, comments, highlights, note_versions, "
-                "timeline_entries, care_notes, profiles RESTART IDENTITY CASCADE"
+                "care_note_assessments, timeline_entries, care_notes, profiles "
+                "RESTART IDENTITY CASCADE"
             )
             self._seed(conn)
 

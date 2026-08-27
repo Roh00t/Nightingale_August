@@ -179,6 +179,25 @@ CREATE INDEX idx_highlights_surfaced
 CREATE INDEX idx_highlights_care_note ON highlights(care_note_id, importance_score DESC);
 CREATE INDEX idx_highlights_source    ON highlights(source_entry_id);
 
+-- Internal clinical assessment, held apart from the patient-readable row.
+--
+-- care_notes.glance_cache is readable by the patient who owns it, and must be:
+-- it carries their care-plan progress. But RLS is ROW-level, not column-level,
+-- so anything stored in that column is readable by the patient with their own
+-- JWT — a direct PostgREST call bypasses the UI entirely. Stripping the field
+-- in a server component hides it from the page; it does not withhold it.
+--
+-- So the clinician's risk judgement ("eGFR declining 62 -> 45", CRITICAL,
+-- confidence 0.92) and unresolved clinical actions live here instead, in a
+-- table with NO patient policy. Postgres returns zero rows to a patient
+-- whatever route they take.
+CREATE TABLE care_note_assessments (
+  care_note_id  uuid PRIMARY KEY REFERENCES care_notes(id) ON DELETE CASCADE,
+  -- {top_items: [...], changes_since_last_visit: [...]}
+  assessment    jsonb NOT NULL DEFAULT '{}',
+  updated_at    timestamptz DEFAULT now()
+);
+
 CREATE TABLE interaction_log (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id          uuid NOT NULL REFERENCES profiles(id),
@@ -293,6 +312,7 @@ ALTER TABLE note_versions    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comments         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE highlights       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE interaction_log  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE care_note_assessments ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------- clinics ---
 CREATE POLICY "Users can view their own clinic"
@@ -474,6 +494,31 @@ CREATE POLICY "Care team can create highlights"
 
 CREATE POLICY "Clinicians can update highlights"
   ON highlights FOR UPDATE
+  USING (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('clinician', 'admin')
+  );
+
+-- ------------------------------------------------- care_note_assessments ---
+-- No patient policy exists, by design. A patient reading their own care note
+-- still gets nothing here, including through a direct API call, because there
+-- is no rule that could admit them.
+CREATE POLICY "Care team can view assessments"
+  ON care_note_assessments FOR SELECT
+  USING (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('staff', 'clinician', 'admin')
+  );
+
+CREATE POLICY "Clinicians can write assessments"
+  ON care_note_assessments FOR INSERT
+  WITH CHECK (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('clinician', 'admin')
+  );
+
+CREATE POLICY "Clinicians can update assessments"
+  ON care_note_assessments FOR UPDATE
   USING (
     check_care_note_access(care_note_id)
     AND get_user_role() IN ('clinician', 'admin')
@@ -709,14 +754,20 @@ BEGIN
   -- 0.78 into the seed body, so every fresh seed reintroduced the bug and
   -- the Care Plan badge read "0.78%" in red (guardrails.md M4).
   INSERT INTO public.care_notes (id, patient_id, clinic_id, glance_cache) VALUES
+    -- glance_cache holds ONLY patient-safe fields. The clinical risk assessment
+    -- goes to care_note_assessments, which has no patient policy.
     (v_care_note_id, p_patient_id, v_clinic_1, '{
+      "care_plan_score": 78,
+      "last_visit": "2026-02-01"
+    }');
+
+  INSERT INTO public.care_note_assessments (care_note_id, assessment) VALUES
+    (v_care_note_id, '{
       "top_items": [
         {"type": "action",   "text": "Cardiology referral pending since Jan 15", "risk_level": "high", "status": "unresolved"},
         {"type": "risk",     "text": "eGFR declining: 62 → 45 over 6 months", "risk_level": "critical", "confidence": 0.92},
         {"type": "positive", "text": "Blood pressure improved: 135/82 → 128/78", "risk_level": "info"}
-      ],
-      "care_plan_score": 78,
-      "last_visit": "2026-02-01"
+      ]
     }');
 
   INSERT INTO public.timeline_entries
@@ -877,12 +928,16 @@ BEGIN
   -- against. care_plan_score 65, same 0-100 scale.
   INSERT INTO public.care_notes (id, patient_id, clinic_id, glance_cache) VALUES
     (v_sunrise_care_note_id, p_sunrise_patient_id, v_clinic_2, '{
+      "care_plan_score": 65,
+      "last_visit": "2026-01-20"
+    }');
+
+  INSERT INTO public.care_note_assessments (care_note_id, assessment) VALUES
+    (v_sunrise_care_note_id, '{
       "top_items": [
         {"type": "risk",   "text": "Type 2 Diabetes - A1C trending up", "risk_level": "high", "confidence": 0.88},
         {"type": "action", "text": "Overdue for annual eye exam", "risk_level": "medium", "status": "pending"}
-      ],
-      "care_plan_score": 65,
-      "last_visit": "2026-01-20"
+      ]
     }');
 
   INSERT INTO public.timeline_entries

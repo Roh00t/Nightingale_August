@@ -296,3 +296,118 @@ class TestRBACScope:
         except Exception:
             # Expected: RLS violation
             pass
+
+
+def _find_graded(node, path="glance_cache"):
+    """Every path in `node` that carries a clinical grading key."""
+    found = []
+    if isinstance(node, list):
+        for i, v in enumerate(node):
+            found += _find_graded(v, f"{path}[{i}]")
+    elif isinstance(node, dict):
+        for key in ("risk_level", "confidence", "severity", "risk", "status"):
+            if key in node:
+                found.append(f"{path}.{key} = {node[key]!r}")
+        for k, v in node.items():
+            found += _find_graded(v, f"{path}.{k}")
+    return found
+
+
+class TestPatientCannotReachInternalAssessment:
+    """
+    The clinician's risk judgement about a patient is not patient-facing.
+
+    `care_notes.glance_cache` is readable by the patient who owns the row — it
+    has to be, it carries their care-plan progress. But RLS is ROW-level, not
+    column-level, so anything stored in that column is readable by that patient
+    with their own JWT. A direct PostgREST call bypasses the UI entirely, which
+    means stripping the field in a server component HIDES it rather than
+    WITHHOLDING it.
+
+    The severity chips (CRITICAL/HIGH), confidence scores and unresolved
+    clinical actions therefore live in `care_note_assessments`, which has no
+    patient policy at all.
+    """
+
+    async def test_patient_gets_no_assessment_rows(self, patient_client):
+        """Not filtered, not redacted — absent. No policy admits a patient."""
+        assert patient_client.table("care_note_assessments").select("*").execute().data == []
+
+    async def test_patient_cannot_read_their_own_assessment_by_id(
+        self, patient_client, sample_care_note_id
+    ):
+        """Owning the care note does not confer access to the assessment of it."""
+        rows = (
+            patient_client.table("care_note_assessments")
+            .select("*")
+            .eq("care_note_id", sample_care_note_id)
+            .execute()
+        ).data
+        assert rows == []
+
+    async def test_patient_glance_cache_carries_no_risk_assessment(
+        self, patient_client
+    ):
+        """
+        The column the patient CAN read must contain nothing clinical.
+
+        This is the assertion that would have caught the original leak: the
+        patient portal rendered "eGFR declining: 62 -> 45" with a CRITICAL chip,
+        straight out of glance_cache.
+        """
+        rows = patient_client.table("care_notes").select("glance_cache").execute().data
+        assert rows, "patient should still see their own care note row"
+
+        for row in rows:
+            cache = row["glance_cache"] or {}
+            # Patient-safe fields remain.
+            assert "care_plan_score" in cache
+
+            # Internal assessment must be absent, not merely empty-valued.
+            assert not cache.get("top_items"), (
+                f"internal risk assessment reached the patient: {cache.get('top_items')}"
+            )
+            assert not cache.get("changes_since_last_visit")
+
+            # Look for the SHAPE of a clinical judgement rather than for clinical
+            # words. A care plan written for the patient may legitimately name
+            # their own labs; what must never cross is the clinician's grading of
+            # them -- a severity band, a model confidence, a triage status.
+            graded = _find_graded(cache)
+            assert not graded, f"severity grading readable by the patient: {graded[:3]}"
+
+    async def test_care_team_can_read_the_assessment(self, clinician_client, staff_client):
+        """The control must not have broken the people who need it."""
+        for client, role in ((clinician_client, "clinician"), (staff_client, "staff")):
+            rows = client.table("care_note_assessments").select("*").execute().data
+            assert rows, f"{role} lost access to the clinical assessment"
+            assert rows[0]["assessment"].get("top_items"), "assessment payload is empty"
+
+    async def test_assessment_is_clinic_scoped(
+        self, clinician_client, sunrise_care_note_id
+    ):
+        """A care-team member cannot read another clinic's assessment."""
+        rows = (
+            clinician_client.table("care_note_assessments")
+            .select("*")
+            .eq("care_note_id", sunrise_care_note_id)
+            .execute()
+        ).data
+        assert rows == []
+
+    async def test_patient_visible_entries_carry_no_internal_severity(
+        self, patient_client
+    ):
+        """
+        Entries a patient CAN read must not describe them in clinical risk terms.
+
+        Their own instructions are info-level by construction; a critical or high
+        entry reaching the patient would mean an internal assessment leaked
+        through the timeline instead of the glance cache.
+        """
+        rows = patient_client.table("timeline_entries").select("*").execute().data
+        for row in rows:
+            assert row["risk_level"] in ("info", "low"), (
+                f"patient can see a {row['risk_level']} entry: {row['entry_type']}"
+            )
+            assert row["visibility"] == "patient_visible" or row["entry_type"] == "patient_message"

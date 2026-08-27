@@ -49,34 +49,61 @@ export default async function PatientCareNotePage({
 
   const elapsed = performance.now() - started;
 
-  // PATIENT PRIVACY — enforced on the server, not by hiding UI.
+  // PATIENT DATA ISOLATION
   //
-  // glance_cache.top_items holds the internal clinical assessment: risk levels,
-  // severity, confidence, and open clinical actions ("eGFR declining 62 -> 45",
-  // CRITICAL). RLS correctly lets a patient read their own care_notes row, so
-  // the column arrives here legitimately — but that does not make its contents
-  // patient-facing. Rendering it in the patient portal exposed a clinician's
-  // risk judgement to the patient it was written about.
+  // The clinical risk assessment — severity chips (CRITICAL/HIGH), confidence,
+  // and unresolved clinical actions like "eGFR declining 62 -> 45" — lives in
+  // care_note_assessments, which has NO patient policy. A patient gets zero
+  // rows from it whatever route they take, including a direct PostgREST call
+  // with their own JWT.
   //
-  // The internal fields are removed BEFORE the payload crosses to the client,
-  // so they are absent from the RSC stream and the browser bundle entirely.
-  // Filtering in the component would leave the data in the page source.
+  // That separation is the actual control. Stripping fields in a component only
+  // hides them from the page: RLS is row-level, not column-level, so anything
+  // left inside the patient-readable care_notes row stays readable by the
+  // patient who owns it.
+  //
+  // Here the two are recomposed for the care team, so every downstream
+  // component keeps the glance_cache shape it already expects.
   const careNote = (data as CareNote | null) ?? null;
-  const safeCareNote =
-    careNote && viewerRole === 'patient'
-      ? {
-          ...careNote,
-          glance_cache: {
-            // Retained: the patient's own care-plan progress.
-            care_plan_score: careNote.glance_cache?.care_plan_score ?? 0,
-            care_plan_items: careNote.glance_cache?.care_plan_items ?? [],
-            last_visit: careNote.glance_cache?.last_visit,
-            // Withheld: internal risk assessment and open clinical actions.
-            top_items: [],
-            changes_since_last_visit: [],
-          },
-        }
-      : careNote;
+  const isCareTeam =
+    viewerRole === 'clinician' || viewerRole === 'staff' || viewerRole === 'admin';
+
+  let safeCareNote = careNote;
+
+  if (careNote && isCareTeam) {
+    // RLS is what permits this read; the role check avoids a pointless query.
+    const { data: assessment } = await supabase
+      .from('care_note_assessments')
+      .select('assessment')
+      .eq('care_note_id', careNote.id)
+      .maybeSingle();
+
+    const internal = (assessment?.assessment ?? {}) as {
+      top_items?: unknown[];
+      changes_since_last_visit?: unknown[];
+    };
+
+    safeCareNote = {
+      ...careNote,
+      glance_cache: {
+        ...careNote.glance_cache,
+        top_items: (internal.top_items ?? []) as CareNote['glance_cache']['top_items'],
+        changes_since_last_visit: (internal.changes_since_last_visit ??
+          []) as CareNote['glance_cache']['changes_since_last_visit'],
+      },
+    };
+  } else if (careNote) {
+    // Patients: the assessment was never fetched, so there is nothing to strip.
+    // These stay empty so components render the same way for every role.
+    safeCareNote = {
+      ...careNote,
+      glance_cache: {
+        ...careNote.glance_cache,
+        top_items: [],
+        changes_since_last_visit: [],
+      },
+    };
+  }
 
   // Server-timing log for the P95 evidence in the technical brief. Records
   // duration and outcome only — never note content.

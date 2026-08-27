@@ -61,3 +61,85 @@ SELECT table_name,
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 ORDER BY table_name;
+
+-- ---------------------------------------------------------------------------
+-- PATIENT DATA ISOLATION — move the clinical risk assessment out of a
+-- patient-readable row.
+--
+-- care_notes.glance_cache has to be readable by the patient who owns the row;
+-- it carries their care-plan progress. But RLS is ROW-level, not COLUMN-level,
+-- so every other key in that jsonb was readable too. A patient calling
+-- PostgREST directly with their own JWT could read the clinician's internal
+-- assessment verbatim:
+--
+--   {"text": "eGFR declining: 62 -> 45 over 6 months", "confidence": 0.92,
+--    "risk": "critical"}
+--   {"text": "Cardiology referral pending since Jan 15", "status": "unresolved"}
+--
+-- Stripping those fields in a server component only hid them from the page.
+-- The fix is structural: the assessment moves to its own table with no patient
+-- policy, so Postgres returns zero rows to a patient by whatever route.
+--
+-- Idempotent, and safe to run on a database that already holds real rows.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS care_note_assessments (
+  care_note_id  uuid PRIMARY KEY REFERENCES care_notes(id) ON DELETE CASCADE,
+  assessment    jsonb NOT NULL DEFAULT '{}',
+  updated_at    timestamptz DEFAULT now()
+);
+
+ALTER TABLE care_note_assessments ENABLE ROW LEVEL SECURITY;
+
+-- Dropped first so re-running this file cannot leave two definitions of the
+-- same policy behind — the failure mode that made 007/012/014 unreadable.
+DROP POLICY IF EXISTS "Care team can view assessments"   ON care_note_assessments;
+DROP POLICY IF EXISTS "Clinicians can write assessments" ON care_note_assessments;
+DROP POLICY IF EXISTS "Clinicians can update assessments" ON care_note_assessments;
+
+-- No patient policy, deliberately. There is no rule that could admit a patient.
+CREATE POLICY "Care team can view assessments"
+  ON care_note_assessments FOR SELECT
+  USING (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('staff', 'clinician', 'admin')
+  );
+
+CREATE POLICY "Clinicians can write assessments"
+  ON care_note_assessments FOR INSERT
+  WITH CHECK (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('clinician', 'admin')
+  );
+
+CREATE POLICY "Clinicians can update assessments"
+  ON care_note_assessments FOR UPDATE
+  USING (
+    check_care_note_access(care_note_id)
+    AND get_user_role() IN ('clinician', 'admin')
+  );
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON care_note_assessments TO authenticated;
+GRANT ALL                            ON care_note_assessments TO service_role;
+
+-- Backfill: carry any assessment already sitting in glance_cache across.
+-- ON CONFLICT DO NOTHING so a second run does not overwrite edits made since.
+INSERT INTO care_note_assessments (care_note_id, assessment)
+SELECT
+  id,
+  jsonb_strip_nulls(jsonb_build_object(
+    'top_items',                glance_cache -> 'top_items',
+    'changes_since_last_visit', glance_cache -> 'changes_since_last_visit'
+  ))
+FROM care_notes
+WHERE glance_cache ? 'top_items'
+   OR glance_cache ? 'changes_since_last_visit'
+ON CONFLICT (care_note_id) DO NOTHING;
+
+-- Then remove them from the patient-readable row. This is the step that
+-- actually closes the leak; everything above only prepares somewhere to put
+-- the data. Run it last so a failure cannot destroy the assessment.
+UPDATE care_notes
+SET glance_cache = glance_cache - 'top_items' - 'changes_since_last_visit'
+WHERE glance_cache ? 'top_items'
+   OR glance_cache ? 'changes_since_last_visit';
