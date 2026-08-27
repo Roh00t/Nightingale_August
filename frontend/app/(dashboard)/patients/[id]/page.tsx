@@ -31,6 +31,14 @@ export default async function PatientCareNotePage({
 
   const supabase = await createClient();
 
+  // The caller's role decides what may leave the server. Read it here rather
+  // than trusting anything the client sends.
+  const { data: { user } } = await supabase.auth.getUser();
+  const { data: viewer } = user
+    ? await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+    : { data: null };
+  const viewerRole = viewer?.role ?? null;
+
   // Single indexed read. Selecting explicit columns rather than * keeps the
   // yjs_state bytea column — which can be large — off this path entirely.
   const { data, error } = await supabase
@@ -40,6 +48,35 @@ export default async function PatientCareNotePage({
     .maybeSingle();
 
   const elapsed = performance.now() - started;
+
+  // PATIENT PRIVACY — enforced on the server, not by hiding UI.
+  //
+  // glance_cache.top_items holds the internal clinical assessment: risk levels,
+  // severity, confidence, and open clinical actions ("eGFR declining 62 -> 45",
+  // CRITICAL). RLS correctly lets a patient read their own care_notes row, so
+  // the column arrives here legitimately — but that does not make its contents
+  // patient-facing. Rendering it in the patient portal exposed a clinician's
+  // risk judgement to the patient it was written about.
+  //
+  // The internal fields are removed BEFORE the payload crosses to the client,
+  // so they are absent from the RSC stream and the browser bundle entirely.
+  // Filtering in the component would leave the data in the page source.
+  const careNote = (data as CareNote | null) ?? null;
+  const safeCareNote =
+    careNote && viewerRole === 'patient'
+      ? {
+          ...careNote,
+          glance_cache: {
+            // Retained: the patient's own care-plan progress.
+            care_plan_score: careNote.glance_cache?.care_plan_score ?? 0,
+            care_plan_items: careNote.glance_cache?.care_plan_items ?? [],
+            last_visit: careNote.glance_cache?.last_visit,
+            // Withheld: internal risk assessment and open clinical actions.
+            top_items: [],
+            changes_since_last_visit: [],
+          },
+        }
+      : careNote;
 
   // Server-timing log for the P95 evidence in the technical brief. Records
   // duration and outcome only — never note content.
@@ -51,7 +88,7 @@ export default async function PatientCareNotePage({
   return (
     <PatientWorkspace
       patientId={patientId}
-      initialCareNote={(data as CareNote | null) ?? null}
+      initialCareNote={safeCareNote}
     />
   );
 }

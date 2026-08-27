@@ -644,7 +644,19 @@ export function CareNoteEditor({
           </div>
 
           {/* Toolbar */}
-          {!readOnly && editor && (
+          {readOnly && (
+          <p
+            data-testid="read-only-reason"
+            className="mb-2 rounded-md border border-border bg-secondary/40 px-2.5 py-1.5 text-xs text-muted-foreground"
+          >
+            {currentUser.role === 'staff'
+              ? 'Read-only. The care note is the clinician\u2019s section \u2014 add a staff note or comment below instead.'
+              : currentUser.role === 'admin'
+                ? 'Read-only. Admin access is clinic oversight, not editing.'
+                : 'Read-only.'}
+          </p>
+        )}
+        {!readOnly && editor && (
             <div className="flex items-center gap-0.5 bg-secondary/80 rounded-md p-0.5 flex-wrap">
               <Button
                 size="sm"

@@ -63,6 +63,7 @@ class ConflictClaimOut(BaseModel):
     value: str
     quote: str
     timestamp: str | None = None
+    agreed_by: int = 1
 
 
 class ConflictOut(BaseModel):

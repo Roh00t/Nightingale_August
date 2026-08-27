@@ -798,16 +798,52 @@ BEGIN
      jsonb_build_object('source_type','timeline_entry','source_id',v_entry4,'span',jsonb_build_object('from',80,'to',115)),
      '2026-01-15 11:05:00+08');
 
+  -- content_snapshot holds the ACTUAL note text at each point in time, not a
+  -- description of what changed. A snapshot containing "Added follow-up notes"
+  -- cannot be reverted to -- restoring it would replace the note with that
+  -- sentence. change_summary is where the description belongs.
   INSERT INTO public.note_versions
     (care_note_id, version_number, content_snapshot, changed_by, change_summary, created_at) VALUES
-    (v_care_note_id, 1, '{"summary": "Initial patient record created"}', p_clinician_id,
-     'Created initial care note for Alice Wong', '2025-04-15 09:30:00+08'),
-    (v_care_note_id, 2, '{"summary": "Added follow-up notes and medication"}', p_clinician_id,
-     'Added 3-month follow-up, started Lisinopril', '2025-06-20 10:00:00+08'),
-    (v_care_note_id, 3, '{"summary": "Added concerning lab results"}', p_clinician_id,
-     'Updated with declining eGFR results, cardiology referral', '2026-01-15 11:00:00+08'),
-    (v_care_note_id, 4, '{"summary": "AI consult summary and patient instructions"}', p_clinician_id,
-     'Added AI-scribed summary and patient-visible instructions', '2026-02-01 10:00:00+08');
+    (v_care_note_id, 1,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: Hypertension (BP 145/90), mild CKD (eGFR 62). BMI 28.5. '
+               'Family history of cardiovascular disease.' || chr(10) ||
+               'PLAN: Lifestyle modification. Repeat bloods in 3 months.',
+       'sections', jsonb_build_object(
+         'assessment', 'Hypertension (BP 145/90), mild CKD (eGFR 62). BMI 28.5.',
+         'plan', 'Lifestyle modification. Repeat bloods in 3 months.')),
+     p_clinician_id, 'Created initial care note for Alice Wong', '2025-04-15 09:30:00+08'),
+
+    (v_care_note_id, 2,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: BP improved to 135/82. eGFR stable at 58. Good dietary compliance.' || chr(10) ||
+               'PLAN: Started Lisinopril 5mg daily. Review in 3 months.',
+       'sections', jsonb_build_object(
+         'assessment', 'BP improved to 135/82. eGFR stable at 58. Good dietary compliance.',
+         'plan', 'Started Lisinopril 5mg daily. Review in 3 months.')),
+     p_clinician_id, 'Added 3-month follow-up, started Lisinopril', '2025-06-20 10:00:00+08'),
+
+    (v_care_note_id, 3,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: eGFR dropped to 45 (from 58). Creatinine 1.4. Potassium 5.1 '
+               '(borderline high). Cardiorenal syndrome suspected.' || chr(10) ||
+               'PLAN: Increased Lisinopril to 10mg. Cardiology referral raised. '
+               'Monitor potassium closely.',
+       'sections', jsonb_build_object(
+         'assessment', 'eGFR dropped to 45 (from 58). Creatinine 1.4. Potassium 5.1 (borderline high). Cardiorenal syndrome suspected.',
+         'plan', 'Increased Lisinopril to 10mg. Cardiology referral raised. Monitor potassium closely.')),
+     p_clinician_id, 'Updated with declining eGFR results, cardiology referral', '2026-01-15 11:00:00+08'),
+
+    (v_care_note_id, 4,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: New dyspnea on exertion. BP 128/78 (improved). eGFR trend '
+               'remains concerning. Cardiology referral still pending.' || chr(10) ||
+               'PLAN: Continue Lisinopril 10mg. Nephrology consult if eGFR declines further. '
+               'Patient educated on potassium-rich foods.',
+       'sections', jsonb_build_object(
+         'assessment', 'New dyspnea on exertion. BP 128/78 (improved). eGFR trend remains concerning. Cardiology referral still pending.',
+         'plan', 'Continue Lisinopril 10mg. Nephrology consult if eGFR declines further. Patient educated on potassium-rich foods.')),
+     p_clinician_id, 'Added AI-scribed summary and patient-visible instructions', '2026-02-01 10:00:00+08');
 
   INSERT INTO public.comments
     (care_note_id, timeline_entry_id, author_id, author_role, content, created_at) VALUES
@@ -885,10 +921,23 @@ BEGIN
 
   INSERT INTO public.note_versions
     (care_note_id, version_number, content_snapshot, changed_by, change_summary, created_at) VALUES
-    (v_sunrise_care_note_id, 1, '{"summary": "Initial patient record for Robert Lee"}', p_sunrise_clinician_id,
-     'Created care note for new patient transfer', '2025-11-10 10:00:00+08'),
-    (v_sunrise_care_note_id, 2, '{"summary": "Updated with lab results and treatment plan"}', p_sunrise_clinician_id,
-     'Added diabetes panel results, initiated Ozempic', '2026-01-20 11:30:00+08');
+    (v_sunrise_care_note_id, 1,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: Type 2 Diabetes, 3 years. A1C 7.8% from previous provider. BMI 31.2.' || chr(10) ||
+               'PLAN: Continue Metformin 1000mg BID. Weight management referral.',
+       'sections', jsonb_build_object(
+         'assessment', 'Type 2 Diabetes, 3 years. A1C 7.8% from previous provider. BMI 31.2.',
+         'plan', 'Continue Metformin 1000mg BID. Weight management referral.')),
+     p_sunrise_clinician_id, 'Created care note for new patient transfer', '2025-11-10 10:00:00+08'),
+
+    (v_sunrise_care_note_id, 2,
+     jsonb_build_object(
+       'text', 'ASSESSMENT: A1C risen to 8.2%. Fasting glucose 156. Diet adherence poor over holidays.' || chr(10) ||
+               'PLAN: Adding Ozempic. Dietitian referral raised.',
+       'sections', jsonb_build_object(
+         'assessment', 'A1C risen to 8.2%. Fasting glucose 156. Diet adherence poor over holidays.',
+         'plan', 'Adding Ozempic. Dietitian referral raised.')),
+     p_sunrise_clinician_id, 'Added diabetes panel results, initiated Ozempic', '2026-01-20 11:30:00+08');
 
   INSERT INTO public.comments
     (care_note_id, timeline_entry_id, author_id, author_role, content, created_at) VALUES

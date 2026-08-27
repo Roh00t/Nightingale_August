@@ -205,3 +205,99 @@ class TestAuthFailureModes:
 
         with pytest.raises(RuntimeError, match="multiple keys"):
             _select_jwk({"keys": [{"kid": "a"}, {"kid": "b"}]}, None)
+
+
+class TestTitrationIsNotAContradiction:
+    """
+    Regression: Alice Wong's Lisinopril 5mg -> 10mg was flagged as an active
+    cross-author conflict, and rendered as "10mg vs 10mg vs 10mg" because the
+    same value repeated across eight notes was never deduplicated.
+
+    Both are false positives, and false positives on a safety badge are how a
+    care team learns to ignore it.
+    """
+
+    def test_prescriber_titration_is_not_flagged(self, client):
+        """5mg -> 10mg by the prescriber, later echoed by others, is a change."""
+        body = post(client, [
+            entry("e1", "cA", "clinician", "Started Lisinopril 5mg daily.",
+                  "2025-06-20T00:00:00+00:00"),
+            entry("e2", "cA", "clinician", "Increased Lisinopril to 10mg.",
+                  "2026-01-15T00:00:00+00:00"),
+            entry("e3", "sB", "staff", "Administered Lisinopril 10mg as charted.",
+                  "2026-01-16T00:00:00+00:00"),
+            entry("e4", "sys", "system", "AI summary: continue Lisinopril 10mg.",
+                  "2026-02-01T00:00:00+00:00"),
+        ]).json()
+        assert body["conflicts"] == [], (
+            f"titration was flagged as a contradiction: {body['conflicts']}"
+        )
+
+    def test_repeated_identical_values_are_deduplicated(self, client):
+        """
+        Eight notes repeating 10mg must not render as eight claims. A conflict
+        that lists the same value repeatedly is unreadable and hides the one
+        value that actually differs.
+        """
+        entries = [
+            entry(f"e{i}", f"a{i}", "clinician" if i % 2 else "staff",
+                  "Lisinopril 10mg daily.", f"2026-01-{i:02d}T00:00:00+00:00")
+            for i in range(1, 9)
+        ]
+        entries.append(entry("x", "aX", "staff", "Gave Lisinopril 100mg.",
+                             "2026-01-09T00:00:00+00:00"))
+        body = post(client, entries).json()
+
+        dosage = [c for c in body["conflicts"] if c["conflict_class"] == "dosage"]
+        assert dosage, "the genuine 10mg vs 100mg disagreement was lost"
+        values = [c["value"] for c in dosage[0]["claims"]]
+        assert len(values) == len(set(values)), f"duplicate values rendered: {values}"
+        assert set(values) == {"10mg", "100mg"}
+
+    def test_de_escalation_by_the_prescriber_is_still_titration(self, client):
+        """
+        Reducing a dose is as legitimate as raising one. Suppressing only
+        'lower dose is older' would hide a genuine de-escalation error while
+        still flagging ordinary tapering, which is backwards.
+        """
+        body = post(client, [
+            entry("e1", "cA", "clinician", "Started Lisinopril 10mg.",
+                  "2026-01-01T00:00:00+00:00"),
+            entry("e2", "cA", "clinician", "Reduced Lisinopril to 5mg.",
+                  "2026-02-01T00:00:00+00:00"),
+            entry("e3", "sB", "staff", "Gave Lisinopril 5mg as charted.",
+                  "2026-02-02T00:00:00+00:00"),
+        ]).json()
+        assert body["conflicts"] == []
+
+    def test_a_value_the_prescriber_never_set_is_still_a_conflict(self, client):
+        """
+        The case that must survive suppression: a nurse records a dose the
+        clinician never prescribed. This is the 10mg/100mg transcription error.
+        """
+        body = post(client, [
+            entry("e1", "cA", "clinician", "Prescribed Lisinopril 10mg daily.",
+                  "2026-01-01T00:00:00+00:00"),
+            entry("e2", "sB", "staff", "Administered Lisinopril 100mg as charted.",
+                  "2026-01-02T00:00:00+00:00"),
+        ]).json()
+        dosage = [c for c in body["conflicts"] if c["conflict_class"] == "dosage"]
+        assert dosage, "a dose the prescriber never set was suppressed"
+        assert {c["value"] for c in dosage[0]["claims"]} == {"10mg", "100mg"}
+
+    def test_interleaved_values_are_a_conflict_not_a_progression(self, client):
+        """
+        10mg -> 5mg -> 10mg is not a progression: the record contradicts itself,
+        and the 5mg was never prescribed.
+        """
+        body = post(client, [
+            entry("e1", "cA", "clinician", "Lisinopril 10mg.", "2026-01-01T00:00:00+00:00"),
+            entry("e2", "sB", "staff", "Lisinopril 5mg given.", "2026-01-02T00:00:00+00:00"),
+            entry("e3", "cA", "clinician", "Confirmed Lisinopril 10mg.", "2026-01-03T00:00:00+00:00"),
+        ]).json()
+        assert [c for c in body["conflicts"] if c["conflict_class"] == "dosage"]
+
+    def test_allergy_contradictions_are_unaffected_by_titration_logic(self, client):
+        """Titration suppression applies to DOSAGE only."""
+        body = post(client, CROSS_AUTHOR).json()
+        assert any(c["conflict_class"] == "allergy" for c in body["conflicts"])

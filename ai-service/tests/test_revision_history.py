@@ -113,40 +113,122 @@ class TestRevisionHistory:
     async def test_revert_restores_prior_state(
         self, clinician_client, sample_care_note_id
     ):
-        """Reverting to a prior version should restore that version's content."""
-        # Get all versions
-        result = (
+        """
+        Reverting must restore the ACTUAL prior note content.
+
+        The previous version of this test was tautological: it inserted
+        `content_snapshot = old["content_snapshot"]` and then asserted the
+        inserted row equalled it. That proves the database stored what it was
+        handed — it proves nothing about revert, and it passed while snapshots
+        held descriptions like "Added follow-up notes" that could never be
+        restored to.
+
+        This version compares three distinct states and asserts they relate
+        correctly.
+        """
+        versions = (
             clinician_client.table("note_versions")
             .select("*")
             .eq("care_note_id", sample_care_note_id)
             .order("version_number", desc=False)
             .execute()
+        ).data
+        assert len(versions) >= 2, "need at least two versions to revert between"
+
+        target = versions[0]      # the state we want back
+        current = versions[-1]    # where the note is now
+
+        # Precondition: the two states must actually differ, or the assertion
+        # below would hold trivially.
+        assert target["content_snapshot"] != current["content_snapshot"], (
+            "fixture is degenerate: first and last versions have identical content"
         )
-        assert len(result.data) >= 2, "Need at least 2 versions for revert test"
 
-        old_version = result.data[0]
-        current_version = result.data[-1]
+        # Snapshots must carry real note content, not a description of a change.
+        # A snapshot of "Added follow-up notes and medication" cannot be
+        # reverted to — restoring it would replace the note with that sentence.
+        target_text = (target["content_snapshot"] or {}).get("text", "")
+        assert target_text, "content_snapshot has no 'text' — nothing to restore"
+        assert len(target_text) > 40, (
+            f"snapshot looks like a change description, not note content: {target_text!r}"
+        )
+        assert not target_text.lower().startswith(("added ", "updated ", "created ")), (
+            f"snapshot is a changelog entry, not restorable content: {target_text!r}"
+        )
 
-        # "Revert" by creating a new version with old content
-        revert_version = {
-            "care_note_id": sample_care_note_id,
-            "version_number": current_version["version_number"] + 1,
-            "content_snapshot": old_version["content_snapshot"],
-            "changed_by": (clinician_client.auth.get_user()).user.id,
-            "change_summary": f"Reverted to version {old_version['version_number']}",
-        }
-        insert_result = (
+        # Perform the revert.
+        reverted = (
             clinician_client.table("note_versions")
-            .insert(revert_version)
+            .insert({
+                "care_note_id": sample_care_note_id,
+                "version_number": current["version_number"] + 1,
+                "content_snapshot": target["content_snapshot"],
+                "changed_by": (clinician_client.auth.get_user()).user.id,
+                "change_summary": f"Reverted to version {target['version_number']}",
+            })
             .execute()
-        )
-        assert len(insert_result.data) == 1
+        ).data[0]
 
-        # Verify the reverted version has the old content
-        reverted = insert_result.data[0]
-        assert reverted["content_snapshot"] == old_version["content_snapshot"], (
-            "Reverted version should match the content of the old version"
+        # The note now reads as it did at the target version...
+        assert reverted["content_snapshot"]["text"] == target_text
+        # ...and no longer as it did immediately before the revert.
+        assert reverted["content_snapshot"] != current["content_snapshot"], (
+            "revert did not change the note state"
         )
+        # Revert is additive: the superseded state is still recoverable.
+        after = (
+            clinician_client.table("note_versions")
+            .select("version_number")
+            .eq("care_note_id", sample_care_note_id)
+            .execute()
+        ).data
+        assert len(after) == len(versions) + 1
+        assert current["version_number"] in [v["version_number"] for v in after], (
+            "the reverted-away state was destroyed"
+        )
+
+    async def test_every_snapshot_is_restorable_content(
+        self, clinician_client, sample_care_note_id
+    ):
+        """
+        Every snapshot must be something you could put back into the editor.
+
+        This is what makes "revert to any previous version" meaningful rather
+        than a button that writes a sentence into the note body.
+        """
+        versions = (
+            clinician_client.table("note_versions")
+            .select("version_number, content_snapshot")
+            .eq("care_note_id", sample_care_note_id)
+            .execute()
+        ).data
+
+        for v in versions:
+            snapshot = v["content_snapshot"] or {}
+            assert "text" in snapshot, (
+                f"v{v['version_number']} snapshot has no restorable 'text' key"
+            )
+            assert snapshot["text"].strip(), f"v{v['version_number']} snapshot text is empty"
+
+    async def test_successive_versions_differ(
+        self, clinician_client, sample_care_note_id
+    ):
+        """A version that changed nothing is not a version."""
+        versions = (
+            clinician_client.table("note_versions")
+            .select("version_number, content_snapshot")
+            .eq("care_note_id", sample_care_note_id)
+            .order("version_number", desc=False)
+            .execute()
+        ).data
+
+        seen: list[str] = []
+        for v in versions:
+            text = (v["content_snapshot"] or {}).get("text", "")
+            assert text not in seen, (
+                f"v{v['version_number']} duplicates an earlier snapshot verbatim"
+            )
+            seen.append(text)
 
     async def test_versions_ordered_chronologically(
         self, clinician_client, sample_care_note_id

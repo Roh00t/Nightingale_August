@@ -23,10 +23,13 @@ same answer on every run.
 
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 
 class ConflictClass(str, Enum):
@@ -136,6 +139,9 @@ class Assertion:
     entry_id: str
     quote: str
     timestamp: Any = None
+    # How many distinct authors asserted this same value. 1 unless the claim
+    # survived deduplication as the representative of several agreeing authors.
+    agreed_by: int = 1
 
     @property
     def normalized_value(self) -> str:
@@ -192,6 +198,7 @@ class ClinicalConflict:
                     "value": a.value,
                     "quote": a.quote,
                     "timestamp": a.timestamp,
+                    "agreed_by": a.agreed_by,
                 }
                 for a in self.assertions
             ],
@@ -275,21 +282,111 @@ def extract_assertions(entry: dict[str, Any]) -> list[Assertion]:
     return found
 
 
+def _dedupe(assertions: list[Assertion]) -> list[Assertion]:
+    """
+    Reduce to one representative claim per distinct value.
+
+    Keyed on the VALUE, not on (author, value): eight different people each
+    recording 10mg is eight authors agreeing, and rendering it as
+    "10mg vs 10mg vs 10mg…" is both unreadable and actively misleading — it
+    looks like eight-way disagreement when it is unanimity plus one outlier.
+
+    The earliest assertion of each value is kept, because that is who first
+    committed to it, and `agreed_by` records how many others concurred so the
+    attribution is not lost.
+    """
+    first_by_value: dict[str, Assertion] = {}
+    concurring: dict[str, set[str | None]] = {}
+
+    for a in sorted(assertions, key=lambda x: str(x.timestamp or "")):
+        concurring.setdefault(a.normalized_value, set()).add(a.author_id)
+        first_by_value.setdefault(a.normalized_value, a)
+
+    kept: list[Assertion] = []
+    for value, a in first_by_value.items():
+        kept.append(replace(a, agreed_by=len(concurring[value])))
+    return kept
+
+
+def _is_titration(assertions: list[Assertion]) -> bool:
+    """
+    True when the value history is one prescriber revising their own dose.
+
+    A dose that changes over time is a CHANGE, not a disagreement. Alice Wong's
+    Lisinopril went 5mg -> 10mg because her clinician increased it; flagging
+    that as a contradiction is a false positive that trains a care team to
+    ignore the badge.
+
+    The distinguishing question is not "did the value change" but "did anyone
+    assert a value the prescriber never did". So:
+
+      * every distinct value must have been asserted by the prescriber — the
+        author of the earliest assertion, who owns the decision; and
+      * every other author must only ever echo a value the prescriber set.
+
+    5mg -> 10mg by one clinician, later repeated by staff and the AI scribe,
+    satisfies both: titration.
+
+    Clinician says 10mg, nurse records 100mg: the nurse introduced a value the
+    prescriber never asserted. Not titration — flagged, which is the case that
+    matters.
+
+    Deliberately NOT used: "suppress when the lower dose is older". That would
+    hide a genuine de-escalation error, and dose direction carries no
+    information about whether two people disagree.
+    """
+    if len({a.normalized_value for a in assertions}) < 2:
+        return False
+
+    ordered = sorted(assertions, key=lambda a: str(a.timestamp or ""))
+    prescriber = ordered[0].author_id
+
+    prescriber_values = {
+        a.normalized_value for a in ordered if a.author_id == prescriber
+    }
+    all_values = {a.normalized_value for a in ordered}
+
+    # Someone other than the prescriber introduced a value the prescriber never
+    # used — that is a contradiction, however the doses are ordered.
+    if not all_values <= prescriber_values:
+        return False
+
+    # The prescriber's own values must form a forward progression: each new
+    # value appears after the previous one and the earlier value is not
+    # re-asserted later, which would mean the record is inconsistent rather
+    # than progressing.
+    first_seen: dict[str, str] = {}
+    last_seen: dict[str, str] = {}
+    for a in ordered:
+        ts = str(a.timestamp or "")
+        first_seen.setdefault(a.normalized_value, ts)
+        last_seen[a.normalized_value] = ts
+
+    by_first = sorted(first_seen, key=lambda v: first_seen[v])
+    for earlier, later in zip(by_first, by_first[1:]):
+        if last_seen[earlier] > first_seen[later]:
+            # The earlier value reappears after the later one took effect.
+            return False
+    return True
+
+
 def detect_conflicts(
     entries: Iterable[dict[str, Any]],
     *,
     include_same_author: bool = False,
 ) -> list[ClinicalConflict]:
     """
-    Find entities asserted with different values across entries.
+    Find entities asserted with genuinely conflicting values.
 
-    By default only cross-author disagreements are reported. One author
-    revising their own note over time is a correction, not a contradiction, and
-    reporting it would be noise — which is exactly how alert fatigue starts.
+    Three filters, each removing a distinct class of false positive:
 
-    Vitals are excluded from conflict reporting entirely: a blood pressure
-    differing between April and October is the timeline working as intended, not
-    a disagreement.
+      1. Same-author-only groups are revisions, not disagreements.
+      2. Repeated identical values are deduplicated, so a dose echoed across
+         eight notes does not render as "10mg vs 10mg vs 10mg".
+      3. Monotonic prescriber-owned progressions are titration, not conflict.
+
+    Vitals are excluded entirely: a blood pressure differing between April and
+    October is the timeline working as intended.
     """
     assertions: list[Assertion] = []
     for entry in entries:
@@ -303,10 +400,20 @@ def detect_conflicts(
 
     conflicts: list[ClinicalConflict] = []
     for (entity, cls), group in grouped.items():
-        if len({a.normalized_value for a in group}) < 2:
-            continue
         if not include_same_author and len({a.author_id for a in group}) < 2:
             continue
+
+        group = _dedupe(group)
+
+        if len({a.normalized_value for a in group}) < 2:
+            continue
+
+        # A dose one prescriber revised over time is a change, not a conflict.
+        if cls is ConflictClass.DOSAGE and not include_same_author and _is_titration(group):
+            logger.debug("Suppressed titration on %s: %s", entity,
+                         [a.value for a in group])
+            continue
+
         conflicts.append(ClinicalConflict(
             entity=entity, conflict_class=cls,
             assertions=sorted(group, key=lambda a: str(a.timestamp or "")),

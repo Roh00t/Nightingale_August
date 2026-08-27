@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import { TopCard } from '@/components/glance/TopCard';
 import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { VoiceCapture } from '@/components/voice/VoiceCapture';
+import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferReasonDialog';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -363,6 +364,22 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     toast.success('Action marked complete');
   }, [supabase, logInteraction]);
 
+  /**
+   * Deferring a critical or high finding opens a mandatory reason dialog.
+   *
+   * This used window.prompt, which browsers suppress after repeated use and
+   * sandboxed iframes block outright — a suppressed prompt returns null, which
+   * read as "no reason given" and silently cancelled the defer.
+   */
+  const [deferTarget, setDeferTarget] = useState<Highlight | null>(null);
+
+  const recordDefer = useCallback(async (highlightId: string, reason: string) => {
+    await logInteraction('dismiss', highlightId, {
+      topic: 'action_deferred',
+      ...(reason ? { reason } : {}),
+    });
+  }, [logInteraction]);
+
   const handleDeferAction = useCallback(async (highlightId: string) => {
     const highlight = highlights.find((h) => h.id === highlightId);
     if (!highlight) return;
@@ -370,27 +387,24 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     const needsReason =
       highlight.risk_level === 'critical' || highlight.risk_level === 'high';
 
-    let reason = '';
     if (needsReason) {
-      reason = (window.prompt(
-        `Deferring a ${highlight.risk_level} finding requires a reason.\n\n` +
-        'Why is this safe to defer?',
-      ) ?? '').trim();
-
-      // Same minimum the backend policy enforces, so the UI cannot be the
-      // weaker of the two checks.
-      if (reason.length < 8) {
-        toast.error('A specific reason (at least 8 characters) is required to defer this');
-        return;
-      }
+      setDeferTarget(highlight);   // dialog collects the reason
+      return;
     }
 
-    await logInteraction('dismiss', highlightId, {
-      topic: 'action_deferred',
-      ...(reason ? { reason } : {}),
-    });
-    toast.info(needsReason ? 'Deferred with reason recorded' : 'Action deferred');
-  }, [highlights, logInteraction]);
+    // Low-risk noise stays one click: friction on noise is itself a fatigue driver.
+    await recordDefer(highlightId, '');
+    toast.info('Action deferred');
+  }, [highlights, recordDefer]);
+
+  const confirmDefer = useCallback(async (reason: string) => {
+    if (!deferTarget) return;
+    // Mirrors the backend policy, so the UI cannot be the weaker of the two.
+    if (reason.trim().length < MIN_REASON_LENGTH) return;
+    await recordDefer(deferTarget.id, reason.trim());
+    setDeferTarget(null);
+    toast.info('Deferred with reason recorded');
+  }, [deferTarget, recordDefer]);
 
   /**
    * An ambient capture has already been filed by the time this runs.
@@ -1295,6 +1309,13 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   // Clinician/Staff view — 3-column layout
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      <DeferReasonDialog
+        open={deferTarget !== null}
+        riskLevel={deferTarget?.risk_level ?? 'high'}
+        snippet={deferTarget?.content_snippet}
+        onCancel={() => setDeferTarget(null)}
+        onConfirm={confirmDefer}
+      />
       {/* Draft message panel */}
       {showMessageDraft && (
         <div className="p-3 border-b border-border bg-card shrink-0">
@@ -1411,7 +1432,16 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                 careNoteId={careNote.id}
                 currentUser={currentUser}
                 token={token}
-                readOnly={false}
+                // The shared care-note document is the clinician's section.
+                // Staff contribute through timeline notes, comments, action
+                // assignment and ambient capture — not by overwriting it, and
+                // admins have oversight rather than edit rights (the same split
+                // the collab server enforces at the protocol level).
+                //
+                // RLS already rejects the write; this makes the boundary
+                // visible instead of letting staff type into a field whose save
+                // will be refused.
+                readOnly={activeRole !== 'clinician'}
                 onCreateTimelineEntry={handleCreateTimelineEntry}
               />
             )}

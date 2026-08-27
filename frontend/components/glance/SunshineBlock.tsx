@@ -97,7 +97,14 @@ export function SunshineBlock({
   onOpenAction,
 }: SunshineBlockProps) {
   // ---- 1. Open actions and critical flags -------------------------------
-  const items = glanceCache.top_items ?? [];
+  const patientView = userRole === 'patient';
+
+  // Defence in depth. The server already strips top_items for patients; this
+  // ensures a future caller that forgets to cannot leak the internal clinical
+  // assessment through this component. Two independent checks, because the
+  // consequence of missing one is showing a patient a risk judgement written
+  // about them.
+  const items = patientView ? [] : (glanceCache.top_items ?? []);
   const openActions = items.filter(
     (i) => i.type === 'action' && i.status !== 'resolved'
   );
@@ -126,8 +133,6 @@ export function SunshineBlock({
   const systemAuthored = entries.filter((e) => e.author_role === 'system').length;
   const humanAuthored = entries.length - systemAuthored;
 
-  const patientView = userRole === 'patient';
-
   return (
     <Card className="border-primary/20 bg-gradient-to-br from-primary/[0.04] to-transparent">
       <CardContent className="pt-4 pb-3 space-y-3">
@@ -144,7 +149,7 @@ export function SunshineBlock({
         </div>
 
         {/* ---- Open actions & critical flags ---- */}
-        {(openActions.length > 0 || criticalFlags.length > 0 || conflictCount > 0) && (
+        {!patientView && (openActions.length > 0 || criticalFlags.length > 0 || conflictCount > 0) && (
           <div className="space-y-1.5">
             {conflictCount > 0 && (
               <button
