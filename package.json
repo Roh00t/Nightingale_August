@@ -11,7 +11,7 @@
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:collab\" \"npm run dev:ai\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:collab": "cd collab-server && npx tsx index.ts",
-    "dev:ai": "cd ai-service && uvicorn main:app --reload --port 8000",
+    "dev:ai": "cd ai-service && .venv/bin/uvicorn main:app --reload --port 8000",
     "test": "cd ai-service && .venv/bin/python -m pytest tests/ -v",
     "build": "cd frontend && npm run build",
     "typecheck": "cd frontend && npx tsc --noEmit && cd ../collab-server && npx tsc --noEmit"
