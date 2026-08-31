@@ -172,9 +172,35 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+# Vercel preview deployments get a generated hostname per branch
+# (`<project>-<hash>-<scope>.vercel.app`), so they cannot be enumerated in
+# advance and need a pattern.
+#
+# THE PATTERN IS TIGHTER THAN IT LOOKS, AND HAS TO BE. `*.vercel.app` is a
+# SHARED namespace: anyone with a Vercel account can create a project and take a
+# free subdomain. A permissive `...6ktv.*\.vercel\.app` therefore hands the CORS
+# grant to anyone who registers `nightingale-august-frontend-6ktvevil`, and
+# `.*` spans dots so `...6ktv.attacker.vercel.app` matches too. Both were
+# measured against the loose form before this was written.
+#
+# So: a literal hyphen is required before any suffix (blocking the squat), the
+# suffix character class excludes dots (blocking nested labels), and the dots in
+# `.vercel.app` are escaped.
+#
+# Starlette applies this with `fullmatch`, which is what makes
+# `...vercel.app.evil.com` fail without further work — worth knowing, because
+# the same pattern under `search` would be exploitable.
+VERCEL_PREVIEW_ORIGIN_REGEX = (
+    r"https://nightingale-august-frontend-6ktv(-[a-z0-9-]+)?\.vercel\.app"
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    # Origins matching EITHER the explicit list or this pattern are allowed.
+    # Production stays in the list as well as matching here: an explicit entry
+    # keeps working if the pattern is ever narrowed or removed.
+    allow_origin_regex=VERCEL_PREVIEW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

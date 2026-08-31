@@ -494,6 +494,60 @@ class TestCORSAllowsTheDeployedFrontend:
 
         assert "*" not in main.ALLOWED_ORIGINS
 
+    def test_vercel_preview_deployments_are_allowed(self):
+        """
+        Preview hostnames are generated per branch and cannot be enumerated in
+        advance, so they need a pattern rather than a list.
+        """
+        for origin in (
+            "https://nightingale-august-frontend-6ktv-git-main-rohit.vercel.app",
+            "https://nightingale-august-frontend-6ktv-abc123.vercel.app",
+        ):
+            r = self._preflight(origin)
+            assert r.status_code == 200, f"{origin} rejected"
+            assert r.headers.get("access-control-allow-origin") == origin
+
+    def test_lookalike_vercel_projects_are_refused(self):
+        """
+        The reason the pattern is tighter than the obvious one.
+
+        `*.vercel.app` is a SHARED namespace — anyone with a Vercel account can
+        claim a free subdomain. The natural regex,
+        `...6ktv.*\\.vercel\\.app`, hands the CORS grant to whoever registers
+        `nightingale-august-frontend-6ktvevil`, and because `.*` spans dots it
+        also admits `...6ktv.attacker.vercel.app`. Both were measured as matching
+        the loose form before this pattern was chosen.
+        """
+        for origin in (
+            "https://nightingale-august-frontend-6ktvevil.vercel.app",
+            "https://nightingale-august-frontend-6ktv.attacker.vercel.app",
+            "https://evil-nightingale-august-frontend-6ktv.vercel.app",
+            "https://nightingale-august-frontend-6ktv.vercel.app.evil.com",
+            "https://nightingale-august-frontend-6ktv-x.vercel.app.evil.com",
+        ):
+            r = self._preflight(origin)
+            assert r.headers.get("access-control-allow-origin") is None, (
+                f"{origin} was granted CORS access"
+            )
+
+    def test_pattern_requires_a_hyphen_and_excludes_dots(self):
+        """
+        Asserted on the pattern itself, since these two properties are what stop
+        the squat and the nested label respectively, and a future edit that
+        loosened either would still pass a happy-path preflight test.
+        """
+        import main
+
+        assert "(-[a-z0-9-]+)?" in main.VERCEL_PREVIEW_ORIGIN_REGEX, (
+            "suffix no longer requires a leading hyphen — a squatted project name matches"
+        )
+        assert ".*" not in main.VERCEL_PREVIEW_ORIGIN_REGEX, (
+            "wildcard spans dots — nested subdomain labels match"
+        )
+        assert r"\.vercel\.app" in main.VERCEL_PREVIEW_ORIGIN_REGEX, (
+            "dots in the suffix are unescaped"
+        )
+
     def test_env_override_replaces_rather_than_extends(self, monkeypatch):
         """
         CORS_ORIGINS replaces the default list. An override that kept the
