@@ -198,6 +198,36 @@ CREATE TABLE care_note_assessments (
   updated_at    timestamptz DEFAULT now()
 );
 
+-- glance_cache is patient-readable, so it must be structurally incapable of
+-- holding the clinical assessment.
+--
+-- The assessment lives in care_note_assessments, which has no patient policy.
+-- But /patients/[id] recomposes it into glance_cache in memory so downstream
+-- components keep one shape, and the browser spreads that same object into its
+-- care-plan writes — so a clinician ticking a checkbox once persisted the
+-- assessment straight back into the column a patient reads.
+--
+-- Stripping it in application code has to be remembered at every write site, and
+-- forgetting it is precisely what caused that. This cannot be forgotten.
+CREATE OR REPLACE FUNCTION strip_internal_glance_keys()
+RETURNS trigger AS $$
+BEGIN
+  NEW.glance_cache := COALESCE(NEW.glance_cache, '{}'::jsonb)
+                      - 'top_items'
+                      - 'changes_since_last_visit';
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_strip_internal_glance_keys ON care_notes;
+
+-- BEFORE, so the row is corrected rather than the write rejected. Raising would
+-- break an ordinary care-plan tick for a clinician who did nothing wrong: the
+-- client is sending a superset it did not mean to send, not attacking.
+CREATE TRIGGER trg_strip_internal_glance_keys
+  BEFORE INSERT OR UPDATE ON care_notes
+  FOR EACH ROW EXECUTE FUNCTION strip_internal_glance_keys();
+
 CREATE TABLE interaction_log (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id          uuid NOT NULL REFERENCES profiles(id),

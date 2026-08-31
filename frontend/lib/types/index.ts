@@ -349,3 +349,30 @@ export interface RedactResponse {
   redacted_text: string;
   entities_found: number;
 }
+
+/**
+ * A `glance_cache` safe to persist.
+ *
+ * `/patients/[id]` recomposes the clinical assessment into `glance_cache` in
+ * memory so downstream components keep one shape. That object is therefore a
+ * *display* value, and spreading it into an `update()` writes the assessment
+ * into a column patients can read — which is exactly how the leak returned
+ * after it had once been fixed.
+ *
+ * Every write to `care_notes.glance_cache` must go through this. The database
+ * also strips these keys on write (`20260901_glance_cache_guard.sql`), so this
+ * is the readable half of a guarantee that is enforced elsewhere — the app
+ * should not depend on the database silently discarding what it sent.
+ */
+export type PatientSafeGlanceCache = Omit<GlanceCache, 'top_items' | 'changes_since_last_visit'>;
+
+export function patientSafeGlanceCache(
+  cache: GlanceCache | null | undefined
+): PatientSafeGlanceCache {
+  const {
+    top_items: _topItems,
+    changes_since_last_visit: _changes,
+    ...safe
+  } = cache ?? ({} as GlanceCache);
+  return safe;
+}

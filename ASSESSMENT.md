@@ -4,7 +4,7 @@ Sixteen failure modes a real clinic produces, and what this system actually does
 when it meets them. Written against the code as it stands on `master`, verified
 by running it rather than by reading it.
 
-**Verification basis:** 379 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
+**Verification basis:** 381 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
 `tsc --noEmit` clean on both TypeScript projects; `next build` compiles; all three
 migrations applied to a throwaway PostgreSQL cluster built from
 `supabase/migrations/001_foundation.sql`, then re-applied to confirm idempotency.
@@ -409,7 +409,7 @@ without behaviour". All three now have behaviour: delivery tracing with a signed
 webhook and monotonic status, retraction end-to-end from a Withdraw control to a
 patient-visible notice, and populated highlight provenance with a "Source
 Modified" tag. Item 10 moves to SURVIVES; 9 and 14 remain PARTIAL with the
-remaining gap named in each. 379 tests pass; delivery semantics and retraction
+remaining gap named in each. 381 tests pass; delivery semantics and retraction
 were checked by mutation rather than assumed.
 
 **Third pass** — mock provider, OTP flow, read-time provenance comparison.

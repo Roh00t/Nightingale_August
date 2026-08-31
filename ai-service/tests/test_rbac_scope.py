@@ -500,3 +500,61 @@ class TestPatientFacingWritesRequireTheGate:
             }).execute()
         ).data
         assert rows
+
+
+class TestGlanceCacheCannotCarryTheAssessment:
+    """
+    Regression: the assessment came back after it had already been fixed.
+
+    `/patients/[id]` recomposes the assessment into `glance_cache` in memory so
+    downstream components keep one shape. That object is also what the browser
+    spreads into its care-plan writes, so a clinician ticking a checkbox
+    persisted the assessment into the column patients read. Nothing errored and
+    no test failed — the row simply looked as it had before the original fix.
+
+    Application-side stripping alone would not hold: it has to be remembered at
+    every write site, and forgetting it is what caused this. The column is now
+    structurally incapable of holding these keys.
+    """
+
+    async def test_client_write_back_is_stripped(
+        self, clinician_client, sample_care_note_id
+    ):
+        """Exactly what the browser did: spread a recomposed cache into update()."""
+        clinician_client.table("care_notes").update({
+            "glance_cache": {
+                "care_plan_score": 78,
+                "last_visit": "2026-02-01",
+                "top_items": [{"text": "eGFR declining", "risk_level": "critical"}],
+                "changes_since_last_visit": [{"text": "Creatinine rose"}],
+            }
+        }).eq("id", sample_care_note_id).execute()
+
+        cache = (
+            clinician_client.table("care_notes")
+            .select("glance_cache").eq("id", sample_care_note_id).single().execute()
+        ).data["glance_cache"]
+
+        assert "top_items" not in cache, "the assessment was persisted to a patient-readable column"
+        assert "changes_since_last_visit" not in cache
+        # The legitimate fields must survive — a trigger that ate the care plan
+        # would be a different outage.
+        assert cache["care_plan_score"] == 78
+        assert cache["last_visit"] == "2026-02-01"
+
+    async def test_patient_still_sees_no_assessment_after_a_care_team_write(
+        self, clinician_client, patient_client, sample_care_note_id
+    ):
+        """The property that actually matters, asserted from the patient's side."""
+        clinician_client.table("care_notes").update({
+            "glance_cache": {
+                "care_plan_score": 80,
+                "last_visit": "2026-02-01",
+                "top_items": [{"text": "Anaphylaxis risk", "risk_level": "critical"}],
+            }
+        }).eq("id", sample_care_note_id).execute()
+
+        rows = patient_client.table("care_notes").select("glance_cache").execute().data
+        assert rows
+        for row in rows:
+            assert not (row["glance_cache"] or {}).get("top_items")

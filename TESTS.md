@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**379 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**381 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -30,7 +30,7 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_conflicts_endpoint`](#6-clinical-contradictions--26) | 26 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
 | [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
-| [`test_rbac_scope`](#9-rbac--22) | 22 | Role and tenant isolation at the database |
+| [`test_rbac_scope`](#9-rbac--24) | 24 | Role and tenant isolation at the database |
 | [`test_self_learning_importance`](#10-self-learning--15) | 15 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
@@ -321,7 +321,7 @@ of the record.
 
 ---
 
-## 9. RBAC — 22
+## 9. RBAC — 24
 
 `tests/test_rbac_scope.py` · database, non-superuser
 

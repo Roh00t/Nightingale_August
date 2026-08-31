@@ -10,6 +10,7 @@ import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferR
 import { callAI, AIServiceError, AI_TIMEOUT_MS, type AIFailureKind } from '@/lib/ai_client';
 import { AITimeoutFallback, OfflineModeBadge } from '@/components/ui/AITimeoutFallback';
 import { deriveOfflineFindings, offlineCoverageNote } from '@/lib/offline_summary';
+import { patientSafeGlanceCache } from '@/lib/types';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -692,19 +693,29 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     const resolvedCount = items.filter((i) => i.completed).length;
     const newScore = items.length > 0 ? Math.round((resolvedCount / items.length) * 100) : 0;
 
-    const updatedCache = {
+    // Two shapes, deliberately. The clinician on screen should keep seeing the
+    // assessment; the database must never receive it.
+    //
+    // careNote.glance_cache is the object /patients/[id] recomposed for display,
+    // so it carries top_items for care-team viewers. Spreading it straight into
+    // an update() is what wrote the assessment back into the patient-readable
+    // column after it had already been fixed once.
+    const displayCache = {
       ...careNote.glance_cache,
       care_plan_items: items,
       care_plan_score: newScore,
     };
+    const persistedCache = patientSafeGlanceCache(displayCache);
 
-    // Optimistically update local state
-    setCareNote((prev) => prev ? { ...prev, glance_cache: updatedCache } : prev);
+    // Optimistically update local state — display shape, assessment intact.
+    setCareNote((prev) => prev ? { ...prev, glance_cache: displayCache } : prev);
 
-    // Persist to Supabase
+    // Persist the stripped shape. The database strips these keys again on write
+    // (20260901_glance_cache_guard.sql); this is so the app does not depend on
+    // that happening silently.
     const { error } = await supabase
       .from('care_notes')
-      .update({ glance_cache: updatedCache })
+      .update({ glance_cache: persistedCache })
       .eq('id', careNote.id);
 
     if (error) {
@@ -1104,10 +1115,13 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           .from('care_notes')
           .update({
             glance_cache: {
-              ...careNote.glance_cache,
+              ...patientSafeGlanceCache(careNote.glance_cache),
               care_plan_score: computedScore,
-              changes_since_last_visit: transformedChanges,
               care_plan_items: mergedCarePlanItems,
+              // changes_since_last_visit is deliberately NOT written here. It is
+              // part of the clinical assessment and belongs in
+              // care_note_assessments; writing it to glance_cache puts it in
+              // front of the patient.
             },
           })
           .eq('id', careNote.id);

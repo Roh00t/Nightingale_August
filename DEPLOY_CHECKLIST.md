@@ -3,7 +3,7 @@
 Everything below is **manual** — none of it can be done from the repo. Ordered by
 dependency: each step assumes the previous one landed.
 
-Current state: 379 tests pass, both TypeScript projects typecheck, `next build`
+Current state: 381 tests pass, both TypeScript projects typecheck, `next build`
 compiles, 3 commits ahead of `origin/master`.
 
 > **Secrets are never written into this file.** Read the generated webhook secret
@@ -17,14 +17,18 @@ compiles, 3 commits ahead of `origin/master`.
 
 ## 1. Database migrations — run in this order
 
-Supabase Dashboard → **SQL Editor** → New query. Paste each file whole, run,
-confirm success before starting the next. The order is load-bearing.
+Supabase Dashboard → **SQL Editor** → New query.
+
+Easiest: paste **`supabase/DEPLOY_20260901_all.sql`** — all four in order, in one
+run, verified to apply and re-apply cleanly against a throwaway cluster. Or
+paste them individually below; the order is load-bearing either way.
 
 | # | File | Adds | Depends on |
 |---|---|---|---|
 | 1 | `supabase/migrations/20260901_multi_clinic_rls.sql` | `clinic_id` on 5 tables, backfill trigger, RESTRICTIVE tenant policies | `001_foundation.sql` + `fix_live_grants.sql` |
 | 2 | `supabase/migrations/20260901_care_notes_version.sql` | `care_notes.version`, `save_care_note_yjs()`, highlight provenance columns | 1 |
 | 3 | `supabase/migrations/20260901_phone_identity_and_delivery.sql` | `profiles.phone_e164`, `patient_access_tokens`, `message_deliveries`, retraction columns | 1, 2 |
+| 4 | `supabase/migrations/20260901_glance_cache_guard.sql` | Trigger preventing the assessment being written back into `glance_cache`, plus a repair of any row that already was | 1 |
 
 **Why the order matters.** Migration 1 adds `clinic_id` as `NOT NULL` *after*
 backfilling it from `care_notes`, and installs the trigger that keeps it correct
