@@ -4,7 +4,7 @@ Everything below is **manual** — none of it can be done from the repo. Ordered
 dependency: each step assumes the previous one landed.
 
 Current state: 381 tests pass, both TypeScript projects typecheck, `next build`
-compiles, 3 commits ahead of `origin/master`.
+compiles, 1 commit(s) ahead of `origin/master`.
 
 > **Secrets are never written into this file.** Read the generated webhook secret
 > from the untracked root `.env` when you need to paste it:
@@ -41,7 +41,7 @@ cluster built from `001_foundation.sql`, and re-running them is safe, but
 migration 1 adds NOT NULL columns with a backfill. If you have a Supabase branch,
 run them there first.
 
-**Verify after all three:**
+**Verify after all four:**
 
 ```sql
 -- Paste supabase/verify_grants.sql — expect every table true, RLS enabled.
