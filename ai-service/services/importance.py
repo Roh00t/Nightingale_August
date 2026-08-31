@@ -26,6 +26,33 @@ logger = logging.getLogger(__name__)
 # Weight configuration
 # ---------------------------------------------------------------------------
 
+# ABSOLUTE floor by severity. Applied after scoring; a higher score is kept.
+#
+# Only `critical`. A flat floor destroys ordering information at the boundary —
+# every floored item lands on exactly the same number, so learning can no longer
+# distinguish between them — and that is an acceptable price for `critical`,
+# which is rare and must always be visible, but not for `high`, which is common
+# enough that flattening it would make the loop inert across much of the corpus.
+# `high` gets the relative floor below instead.
+# The value _compute_learned_score returns when a clinic has no history for a
+# topic — neither promoted nor buried. Used as the reference point for the
+# no-demotion rule, so "unlearned" means the same thing as "never seen before".
+NEUTRAL_LEARNED_SCORE = 0.5
+
+ABSOLUTE_FLOOR: dict[str, float] = {
+    "critical": 0.90,
+}
+
+# Severities where learning may raise a score but never lower it.
+#
+# The guarantee is different in kind from the absolute floor and is the more
+# useful one: the score can never fall below what severity, recency and
+# unresolved status already justify on their own. Engagement history is allowed
+# to promote such an item and is structurally unable to demote it — so repeated
+# dismissal stops being able to bury an allergy warning, while pinning still
+# moves it up and relative ordering among high-risk items survives intact.
+NO_DEMOTION_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
+
 RECENCY_WEIGHT = 0.3
 RISK_LEVEL_WEIGHT = 0.3
 UNRESOLVED_ACTION_WEIGHT = 0.2
@@ -341,6 +368,53 @@ async def compute_importance_score(
 
     # Clamp to [0.0, 1.0]
     final = max(0.0, min(1.0, score))
+
+    # SAFETY FLOOR — the learning loop may not bury a clinically severe item.
+    #
+    # Without this, the arithmetic allows it. `critical` contributes
+    # RISK_LEVEL_WEIGHT * 1.0 = 0.30, so a critical highlight with no recency,
+    # no unresolved marker and a learned weight driven negative by repeated
+    # dismissal lands near 0.30 — below a merely `medium` item that is recent
+    # and frequently engaged with. The queue then reads as though the medium
+    # item matters more.
+    #
+    # That is not a hypothetical drift. `reject` carries -0.3 in
+    # ACTION_TYPE_WEIGHTS, and the population most likely to dismiss repeatedly
+    # is a tired clinician at the end of a list — so the signal the loop learns
+    # from is fatigue, and the thing it learns to hide is the alert that keeps
+    # firing. An allergy warning dismissed forty times is the single most
+    # dangerous item to demote, and forty dismissals is exactly what teaches the
+    # model to demote it.
+    #
+    # So severity sets a floor that learning can raise but never lower. The loop
+    # keeps its full range above the floor, and keeps working normally for
+    # everything below `high`, where being wrong is recoverable.
+    severity = (risk_level or "").lower()
+
+    if severity in NO_DEMOTION_SEVERITIES:
+        # What the item scores on clinical grounds alone, with the learned term
+        # held neutral. Learning may push above this; it may not pull below.
+        unlearned = max(0.0, min(1.0,
+            RECENCY_WEIGHT * recency
+            + RISK_LEVEL_WEIGHT * risk
+            + UNRESOLVED_ACTION_WEIGHT * unresolved
+            + LEARNED_WEIGHT * NEUTRAL_LEARNED_SCORE
+        ))
+        if final < unlearned:
+            logger.info(
+                "Demotion blocked: %s item scored %.3f, held at its unlearned "
+                "value %.3f. Engagement history cannot bury this severity.",
+                risk_level, final, unlearned,
+            )
+            final = unlearned
+
+    absolute = ABSOLUTE_FLOOR.get(severity)
+    if absolute is not None and final < absolute:
+        logger.info(
+            "Absolute floor applied: %s item scored %.3f, raised to %.2f.",
+            risk_level, final, absolute,
+        )
+        final = absolute
 
     logger.debug(
         "Importance score=%.3f (recency=%.2f, risk=%.2f, unresolved=%.2f, learned=%.2f)",

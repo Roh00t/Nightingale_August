@@ -522,3 +522,127 @@ class TestLearningLoopChangesScores:
             f"Learned priority did not reorder suggestions "
             f"(clinical={clinical:.3f}, admin={admin:.3f})"
         )
+
+
+class TestSafetyFloorAgainstFatigue:
+    """
+    Audit 15: the learning loop may not bury a clinically severe item.
+
+    The scenario is specific and not hypothetical. `reject` carries -0.3 in
+    ACTION_TYPE_WEIGHTS, and the clinician most likely to dismiss the same alert
+    forty times is a tired one at the end of a list. So the signal the loop
+    learns from is fatigue, and the item it learns to hide is the alert that
+    keeps firing — which is exactly the allergy warning nobody can afford to
+    miss.
+    """
+
+    async def test_repeated_dismissal_cannot_demote_a_critical_item(self, user_ids):
+        from services.importance import compute_importance_score, set_interaction_source
+
+        content = "Anaphylaxis to penicillin documented by nurse"
+        # Forty dismissals of semantically similar content.
+        history = [
+            {"action_type": "reject", "target_type": "highlight",
+             "target_metadata": {"keywords": ["penicillin", "anaphylaxis", "allergy"]}}
+            for _ in range(40)
+        ]
+        set_interaction_source(lambda *a, **k: history)
+        try:
+            score = await compute_importance_score(content, risk_level="critical")
+        finally:
+            set_interaction_source(None)
+
+        assert score >= 0.90, (
+            f"critical item scored {score:.3f} after 40 dismissals — the absolute "
+            "floor did not hold and a tired clinician has buried an anaphylaxis flag"
+        )
+
+    async def test_repeated_dismissal_cannot_demote_a_high_item(self, user_ids):
+        """
+        `high` uses the relative rule rather than a flat floor, so the assertion
+        is that dismissal cannot push it below its unlearned value — not that it
+        lands on a fixed number.
+        """
+        from services.importance import compute_importance_score, set_interaction_source
+
+        content = "Potassium 6.1 mmol/L reported by staff"
+
+        set_interaction_source(lambda *a, **k: [])
+        try:
+            unlearned = await compute_importance_score(content, risk_level="high")
+        finally:
+            set_interaction_source(None)
+
+        history = [
+            {"action_type": "reject", "target_type": "highlight",
+             "target_metadata": {"keywords": ["potassium", "hyperkalaemia", "reported"]}}
+            for _ in range(40)
+        ]
+        set_interaction_source(lambda *a, **k: history)
+        try:
+            dismissed = await compute_importance_score(content, risk_level="high")
+        finally:
+            set_interaction_source(None)
+
+        assert dismissed >= unlearned, (
+            f"high item fell from {unlearned:.3f} to {dismissed:.3f} under dismissal"
+        )
+
+    async def test_learning_still_promotes_high_risk_items(self):
+        """
+        The control, and the reason `high` is not flat-floored. Blocking demotion
+        must not also block promotion — a loop that cannot move high-risk items
+        at all is inert where it matters most, and an earlier version of this
+        floor did exactly that by clamping every high item to one number.
+        """
+        from services.importance import compute_importance_score, set_interaction_source
+
+        content = "Potassium 6.1 mmol/L reported by staff"
+        set_interaction_source(lambda *a, **k: [])
+        try:
+            neutral = await compute_importance_score(content, risk_level="high")
+        finally:
+            set_interaction_source(None)
+
+        history = [
+            {"action_type": "pin", "target_type": "highlight",
+             "target_metadata": {"keywords": ["potassium", "hyperkalaemia", "reported"]}}
+            for _ in range(20)
+        ]
+        set_interaction_source(lambda *a, **k: history)
+        try:
+            promoted = await compute_importance_score(content, risk_level="high")
+        finally:
+            set_interaction_source(None)
+
+        assert promoted > neutral, (
+            f"pinning did not raise a high item ({neutral:.3f} -> {promoted:.3f}); "
+            "the floor has flattened the score and made learning inert"
+        )
+
+    async def test_medium_and_low_remain_fully_learnable(self):
+        """Routine items must stay demotable — that is what the loop is for."""
+        from services.importance import compute_importance_score, set_interaction_source
+
+        content = "Routine blood pressure check completed"
+        set_interaction_source(lambda *a, **k: [])
+        try:
+            neutral = await compute_importance_score(content, risk_level="low")
+        finally:
+            set_interaction_source(None)
+
+        history = [
+            {"action_type": "reject", "target_type": "highlight",
+             "target_metadata": {"keywords": ["routine", "blood", "pressure", "check"]}}
+            for _ in range(30)
+        ]
+        set_interaction_source(lambda *a, **k: history)
+        try:
+            dismissed = await compute_importance_score(content, risk_level="low")
+        finally:
+            set_interaction_source(None)
+
+        assert dismissed < neutral, (
+            "a low-risk item could not be demoted; the floor is over-applied and "
+            "clinicians can no longer tell the system what is noise"
+        )

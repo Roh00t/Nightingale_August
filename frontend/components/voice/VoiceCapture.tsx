@@ -154,11 +154,38 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
       if (careNoteId) params.set('care_note_id', careNoteId);
       const url = `${base}/api/ai/transcribe?${params.toString()}`;
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
+      // A deliberately longer deadline than the 25s used for JSON calls in
+      // lib/ai_client.ts. This request uploads up to 5MB and then waits on
+      // speech-to-text over a two-minute recording; 25s would abort work that
+      // was going to succeed, and the user would have to re-record audio that
+      // cannot be reproduced — the consult already happened.
+      //
+      // It still has a bound. Without one, a stalled upload leaves the
+      // recording in a component state that is lost on navigation, with the
+      // clinician watching a spinner and no way to tell whether to wait.
+      const TRANSCRIBE_TIMEOUT_MS = 120_000;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TRANSCRIBE_TIMEOUT_MS);
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw new Error(
+            'Transcription timed out after two minutes. The recording is still ' +
+            'here — try filing it again, or type the note directly.',
+          );
+        }
+        throw new Error('Could not reach the AI service. The recording is still here.');
+      } finally {
+        clearTimeout(timer);
+      }
 
       if (!response.ok) {
         const detail = await response.json().catch(() => null);

@@ -7,6 +7,8 @@ import { TopCard } from '@/components/glance/TopCard';
 import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { VoiceCapture } from '@/components/voice/VoiceCapture';
 import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferReasonDialog';
+import { callAI, AIServiceError, AI_TIMEOUT_MS, type AIFailureKind } from '@/lib/ai_client';
+import { AITimeoutFallback } from '@/components/ui/AITimeoutFallback';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -74,6 +76,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * clinician needs the offending tokens in front of them while they edit, and a
    * toast disappears in four seconds.
    */
+  /**
+   * Set when the contradiction check could not run. Distinct from "checked and
+   * found nothing" — conflating them would show an all-clear during an outage.
+   */
+  const [conflictsDegraded, setConflictsDegraded] = useState<AIFailureKind | null>(null);
   const [gateBlock, setGateBlock] = useState<{
     verdict: string;
     message: string;
@@ -259,34 +266,37 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
 
     (async () => {
       try {
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/conflicts`,
+        const data = await callAI<{ conflicts?: ClinicalConflict[] }>(
+          '/api/ai/conflicts',
           {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              entries: entries.map((e) => ({
-                id: e.id,
-                author_id: e.author_id,
-                author_role: e.author_role,
-                content_text: e.content_text,
-                created_at: e.created_at,
-              })),
-            }),
+            entries: entries.map((e) => ({
+              id: e.id,
+              author_id: e.author_id,
+              author_role: e.author_role,
+              content_text: e.content_text,
+              created_at: e.created_at,
+            })),
           },
+          token,
         );
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
         if (!cancelled) {
           setConflicts(data.conflicts ?? []);
           setConflictsChecked(true);
         }
-      } catch {
-        // AI service unavailable. Contradictions simply are not shown; the
-        // record itself is unaffected.
+      } catch (err) {
+        // The record is unaffected either way — contradictions are derived, not
+        // stored. But the two failures mean different things to a clinician and
+        // must not be collapsed:
+        //
+        //   degraded  the check did not run. "No contradictions shown" is NOT
+        //             evidence there are none, and the banner has to say so.
+        //   otherwise nothing to report.
+        //
+        // Leaving conflictsChecked false is what keeps the UI from rendering an
+        // all-clear it cannot support.
+        if (!cancelled && err instanceof AIServiceError && err.shouldDegrade) {
+          setConflictsDegraded(err.kind);
+        }
       }
     })();
 
@@ -708,14 +718,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     setDraftKeyPoints([]);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/draft-patient-message`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // AI endpoints verify this Supabase JWT (guardrails S6).
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      const data = await callAI<{ draft_message?: string; key_points?: string[] }>(
+        '/api/ai/draft-patient-message',
+        {
           care_note_id: careNote.id,
           entries: entries.map((e) => ({
             entry_id: e.id,
@@ -724,20 +729,21 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             created_at: e.created_at,
           })),
           author_role: currentUser.role,
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setDraftMessage(data.draft_message || '');
-        setDraftKeyPoints(data.key_points || []);
-      } else {
-        const errorBody = await response.json().catch(() => null);
-        toast.error(errorBody?.detail || 'Failed to generate message draft');
-        setShowMessageDraft(false);
-      }
-    } catch {
-      toast.error('AI service unavailable');
+        },
+        token,
+      );
+      setDraftMessage(data.draft_message || '');
+      setDraftKeyPoints(data.key_points || []);
+    } catch (err) {
+      // Drafting is the one AI failure with no safe degraded output: a
+      // rule-derived "message to the patient" is not a thing that can exist.
+      // So the panel closes and the clinician writes it themselves, which is
+      // always available.
+      const msg =
+        err instanceof AIServiceError && err.kind === 'timeout'
+          ? 'AI draft timed out. Write the message directly, or try again.'
+          : 'AI service unavailable. Write the message directly, or try again.';
+      toast.error(msg);
       setShowMessageDraft(false);
     } finally {
       setGeneratingDraft(false);
@@ -769,43 +775,15 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     setSendingMessage(true);
     setGateBlock(null);
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/send-patient-message`,
+      const sent = await callAI<{ entry_id: string }>(
+        '/api/ai/send-patient-message',
         {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            care_note_id: careNote.id,
-            // The edited text, not the original draft.
-            draft: draftMessage,
-          }),
-        }
+          care_note_id: careNote.id,
+          // The edited text, not the original draft.
+          draft: draftMessage,
+        },
+        token,
       );
-
-      if (response.status === 422) {
-        // Blocked. No row was written — the service screens before it writes.
-        const body = await response.json().catch(() => null);
-        const detail = body?.detail ?? {};
-        setGateBlock({
-          verdict: detail.verdict ?? 'blocked',
-          message: detail.message ?? 'This message cannot be sent as written.',
-          ungroundedTerms: detail.ungrounded_terms ?? [],
-          prohibitedHits: detail.prohibited_hits ?? [],
-        });
-        return;
-      }
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        const detail = typeof body?.detail === 'string' ? body.detail : null;
-        toast.error(detail ?? 'Could not send the message');
-        return;
-      }
-
-      const sent = await response.json();
 
       // Read the row back through the user's own session, so the timeline shows
       // exactly what RLS will show on the next load rather than a local guess.
@@ -823,8 +801,31 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       setDraftMessage('');
       setDraftKeyPoints([]);
       toast.success('Care instructions sent to patient');
-    } catch {
-      toast.error('AI service unavailable — the message was not sent');
+    } catch (err) {
+      if (err instanceof AIServiceError && err.kind === 'rejected') {
+        // A considered refusal from the gate. No row was written — the service
+        // screens before it writes — so this is a state to render, not an error.
+        //
+        // Note this branch must NOT degrade to a fallback. A timeout can fall
+        // back to cached data; a refusal cannot fall back to sending anyway.
+        const d = (err.detail ?? {}) as Record<string, unknown>;
+        setGateBlock({
+          verdict: (d.verdict as string) ?? 'blocked',
+          message: (d.message as string) ?? 'This message cannot be sent as written.',
+          ungroundedTerms: (d.ungrounded_terms as string[]) ?? [],
+          prohibitedHits: (d.prohibited_hits as string[]) ?? [],
+        });
+        return;
+      }
+      // Timeout is the dangerous one here: the request may have been received
+      // and the entry written after we stopped waiting. So the wording must not
+      // promise it was not sent — it says the outcome is unknown and to check,
+      // rather than inviting a duplicate message to the patient.
+      toast.error(
+        err instanceof AIServiceError && err.kind === 'timeout'
+          ? 'Timed out waiting for confirmation. Reload the timeline to check whether it sent before resending.'
+          : 'AI service unavailable — the message was not sent.'
+      );
     } finally {
       setSendingMessage(false);
     }
@@ -899,14 +900,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     toast.info('Generating AI summary...');
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000'}/api/ai/summarize`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // AI endpoints verify this Supabase JWT (guardrails S6).
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      const data = await callAI<AISummarizeResponse>(
+        '/api/ai/summarize',
+        {
           care_note_id: careNote.id,
           entries: entries.map((e) => ({
             entry_id: e.id,
@@ -914,11 +910,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             entry_type: e.entry_type || 'note',
             created_at: e.created_at,
           })),
-        }),
-      });
+        },
+        token,
+      );
 
-      if (response.ok) {
-        const data: AISummarizeResponse = await response.json();
+      {
 
         // AI highlights are plain strings — use a default risk level
         const entryRiskLevel = 'info' as const;
@@ -1068,17 +1064,21 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
         }
 
         toast.success('AI summary generated and saved!');
-      } else {
-        const errorBody = await response.json().catch(() => null);
-        console.error('Summarize failed:', response.status, errorBody);
-        toast.error(errorBody?.detail?.[0]?.msg || 'Failed to generate summary');
       }
-    } catch {
-      toast.error('AI service unavailable');
+    } catch (err) {
+      // Summarisation failing leaves the record untouched — the timeline and
+      // glance cache are read from Supabase and are unaffected by the model
+      // being unreachable. The message says which of the two happened so the
+      // clinician knows whether retrying is worth the wait.
+      toast.error(
+        err instanceof AIServiceError && err.kind === 'timeout'
+          ? `AI summary timed out after ${Math.round(AI_TIMEOUT_MS / 1000)}s. The record below is unchanged.`
+          : 'AI service unavailable. The record below is unchanged.'
+      );
     } finally {
       setLoadingAction(null);
     }
-  }, [careNote, entries, supabase, currentUser]);
+  }, [careNote, entries, supabase, currentUser, token]);
 
   if (loading) {
     return (
@@ -1484,6 +1484,17 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 flex-1 overflow-auto">
         {/* Left column: At a Glance (col-span-3) */}
         <div className="xl:col-span-3 space-y-3">
+          {/* An outage has to be visible here, not silent. If the contradiction
+                        check could not run, "no contradictions" below is an absence of
+                        evidence, not evidence of absence — and a clinician reading a clean
+                        Glance View has no way to tell the difference unless told. */}
+          {conflictsDegraded && (
+                      <AITimeoutFallback
+                        kind={conflictsDegraded}
+                        onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
+                      />
+                    )}
+
           {/* Sunshine disclosure sits above everything: open actions, how much
               of this is AI, and whether it is auditable — before any content. */}
           <SunshineBlock

@@ -55,6 +55,21 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
 )
+
+# Attach the PHI scrubber to the ROOT logger immediately after basicConfig and
+# before anything else can log. Root, not "nightingale.ai": the records most
+# likely to carry raw patient text are the ones this codebase did not write —
+# uvicorn's access log rendering a query string, or a library traceback quoting
+# the value that broke it. A filter on the application logger would miss both.
+#
+# This is defence in depth behind services/redaction.py, not a replacement for
+# it. Redaction is precise and runs before the LLM; this is a blunt regex net on
+# the way to a log sink, which has different retention and a wider audience than
+# the database.
+from services.log_scrubbing import install as install_log_scrubbing  # noqa: E402
+
+install_log_scrubbing()
+
 logger = logging.getLogger("nightingale.ai")
 
 

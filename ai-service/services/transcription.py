@@ -241,6 +241,26 @@ def live_transcript(audio_bytes: bytes, *, filename: str = "audio.webm") -> Tran
     payload = io.BytesIO(audio_bytes)
     payload.name = filename  # the SDK infers the container from the filename
 
+    # SOUTHEAST ASIAN CODE-SWITCHING
+    #
+    # A Singapore consult is routinely one sentence containing English, Malay and
+    # Hokkien — "the doctor say your gula darah damn high already, must makan ubat
+    # every day". Getting that transcribed is mostly about what NOT to send.
+    #
+    # `language_code` is deliberately omitted. Pinning it to "en" makes the model
+    # decode the whole utterance under an English prior, and non-English spans come
+    # back as the nearest English-sounding words rather than as themselves — so
+    # "gula darah" (blood sugar) silently becomes plausible nonsense instead of an
+    # obvious gap a clinician would catch. Auto-detection per segment is the
+    # behaviour that keeps the switch intact.
+    #
+    # Note what this is NOT: Scribe has no Whisper-style free-text `prompt`
+    # parameter to bias decoding with vocabulary hints, so there is no way to feed
+    # it a Malay/Hokkien clinical glossary at this layer. The code-switching
+    # instruction that IS available lives downstream, in the prompt that turns this
+    # transcript into a summary (services/llm.py, CODE_SWITCHING_GUIDANCE), where a
+    # model can be told what it is reading. Splitting the handling across the two
+    # layers is a consequence of the engine, not an oversight.
     result = client.speech_to_text.convert(
         file=payload,
         model_id=MODEL_ID,

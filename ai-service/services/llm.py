@@ -20,9 +20,41 @@ from typing import Any
 
 from groq import AsyncGroq, RateLimitError
 
+from services.egress_guard import assert_safe_for_model
+
 logger = logging.getLogger(__name__)
 
 MODEL_ID = "openai/gpt-oss-20b"
+
+# Southeast Asian code-switching.
+#
+# A Singapore consult is frequently one sentence in three languages: "your gula
+# darah damn high already, must makan ubat every day". The transcript arrives
+# with those spans intact — services/transcription.py deliberately does not pin
+# a language, because an English prior turns them into English-sounding nonsense
+# — so the model reading the transcript has to be told what it is looking at.
+#
+# The instruction is to translate the clinical content and preserve the original
+# term, not to silently anglicise. A clinician skimming a summary needs to be
+# able to see that "makan ubat" was what was actually said, both to check the
+# reading and because the patient's own words matter when the note is disputed.
+#
+# Guessing is prohibited explicitly. The failure this prevents is the model
+# treating an unfamiliar Hokkien term as noise and dropping it, which loses
+# clinical content without leaving a mark that anything was lost.
+CODE_SWITCHING_GUIDANCE = (
+    "TRANSCRIPTS MAY CODE-SWITCH. Singapore clinical speech mixes English, "
+    "Malay, Mandarin, Hokkien, Cantonese and Tamil, often within one sentence "
+    "(e.g. 'gula darah' = blood sugar, 'makan ubat' = take medicine, "
+    "'sakit' = pain, 'demam' = fever). Interpret the clinical meaning of "
+    "non-English spans and write the summary in English, but quote the original "
+    "term in parentheses the first time it carries clinical content — "
+    "for example: blood sugar ('gula darah'). "
+    "If a span is unintelligible or you are unsure of its meaning, reproduce it "
+    "verbatim and mark it [unclear]. Never omit it and never guess: a dropped "
+    "term is a silent loss of clinical content, an [unclear] one is a question "
+    "the clinician can answer.\n\n"
+)
 
 # Prepended to every system prompt. LLMs routinely mangle placeholder syntax,
 # which breaks restoration and can leak a raw token into a clinical note.
@@ -55,6 +87,13 @@ async def _call_with_retry(
 
     Returns the parsed JSON response body from the model.
     """
+    # The chokepoint. Every model call in this service funnels through here, so
+    # this is the one place where "PHI never reaches the LLM" can be enforced
+    # structurally rather than by call-site discipline. Raises before the
+    # network call; it does not repair the prompt, because silently fixing one
+    # leaked field hides the call path that skipped redaction.
+    assert_safe_for_model(messages)
+
     client = _get_client()
 
     last_error: Exception | None = None
@@ -128,6 +167,7 @@ async def generate_summary(
 
     system_prompt = (
         f"{PLACEHOLDER_GUARD}"
+        f"{CODE_SWITCHING_GUIDANCE}"
         "You are a clinical summarization assistant for home healthcare professionals. "
         "You receive de-identified care notes and produce structured summaries. "
         "Always respond with valid JSON matching the schema below. "
