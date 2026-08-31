@@ -8,7 +8,8 @@ import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { VoiceCapture } from '@/components/voice/VoiceCapture';
 import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferReasonDialog';
 import { callAI, AIServiceError, AI_TIMEOUT_MS, type AIFailureKind } from '@/lib/ai_client';
-import { AITimeoutFallback } from '@/components/ui/AITimeoutFallback';
+import { AITimeoutFallback, OfflineModeBadge } from '@/components/ui/AITimeoutFallback';
+import { deriveOfflineFindings, offlineCoverageNote } from '@/lib/offline_summary';
 import { TimelineView } from '@/components/timeline/TimelineView';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -81,6 +82,15 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * found nothing" — conflating them would show an all-clear during an outage.
    */
   const [conflictsDegraded, setConflictsDegraded] = useState<AIFailureKind | null>(null);
+
+  /**
+   * Deterministic findings for the outage path. Memoised because the panel
+   * reads it twice (length check, then map) and the rules scan every entry.
+   */
+  const offlineFindings = React.useMemo(
+    () => (conflictsDegraded ? deriveOfflineFindings(entries) : []),
+    [conflictsDegraded, entries]
+  );
   const [gateBlock, setGateBlock] = useState<{
     verdict: string;
     message: string;
@@ -1484,16 +1494,53 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 flex-1 overflow-auto">
         {/* Left column: At a Glance (col-span-3) */}
         <div className="xl:col-span-3 space-y-3">
-          {/* An outage has to be visible here, not silent. If the contradiction
-                        check could not run, "no contradictions" below is an absence of
-                        evidence, not evidence of absence — and a clinician reading a clean
-                        Glance View has no way to tell the difference unless told. */}
+          {/* An outage has to be visible here, not silent. If the contradiction check
+              could not run, "no contradictions" below is an absence of evidence, not
+              evidence of absence — and a clinician reading a clean Glance View has no
+              way to tell the difference unless told. */}
           {conflictsDegraded && (
-                      <AITimeoutFallback
-                        kind={conflictsDegraded}
-                        onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
-                      />
-                    )}
+            <>
+              <AITimeoutFallback
+                kind={conflictsDegraded}
+                onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
+              />
+
+              {/* Rule-derived findings, shown ONLY while the AI is unavailable. Every
+                  line is a threshold applied to a value already in the record — no
+                  model, no inference.
+
+                  Why this rather than an empty panel: an empty "critical flags" list
+                  does not read as "we could not check", it reads as "there are none".
+                  A clinician who trusts that panel would be handed a false negative
+                  by an infrastructure failure nobody told them about. */}
+              <div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold">Findings while AI is unavailable</p>
+                  <OfflineModeBadge />
+                </div>
+                {offlineFindings.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {offlineFindings.map((f) => (
+                      <li key={f.text} className="text-xs">
+                        <span className={f.risk === 'critical' || f.risk === 'high'
+                          ? 'font-semibold text-destructive' : 'text-foreground'}>
+                          {f.text}
+                        </span>
+                        <span className="block text-[11px] text-muted-foreground">{f.basis}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No threshold rule matched a stored value.
+                  </p>
+                )}
+                <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-border pt-1.5">
+                  {offlineCoverageNote(entries)}
+                </p>
+              </div>
+            </>
+          )}
 
           {/* Sunshine disclosure sits above everything: open actions, how much
               of this is AI, and whether it is auditable — before any content. */}

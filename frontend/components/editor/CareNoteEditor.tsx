@@ -107,6 +107,16 @@ export function CareNoteEditor({
   const [ydoc] = useState(() => new Y.Doc());
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'unavailable'>('connecting');
+  /**
+   * care_notes.version this editor loaded, used for compare-and-swap saves.
+   *
+   * Only meaningful in the fallback path. When Hocuspocus is connected, Yjs
+   * merges concurrent edits and there is nothing to reject — OCC there would
+   * refuse merges the CRDT resolves correctly.
+   */
+  const [baseVersion, setBaseVersion] = useState<number | null>(null);
+  /** Set when a save was refused because someone else saved first. */
+  const [conflictDetected, setConflictDetected] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [fallbackLoaded, setFallbackLoaded] = useState(false);
   const [connectedUsers, setConnectedUsers] = useState<Array<{
@@ -175,11 +185,16 @@ export function CareNoteEditor({
     async function loadFallback() {
       const { data, error } = await supabase
         .from('care_notes')
-        .select('yjs_state')
+        .select('yjs_state, version')
         .eq('id', careNoteId)
         .single();
 
       if (error || !data?.yjs_state) return;
+
+      // The version this editor's content is based on. Every subsequent save
+      // asserts it, so a save built on stale content is refused rather than
+      // applied on top of someone else's work.
+      setBaseVersion(data.version ?? null);
 
       try {
         const bytes = decodeBase64ToYjsState(data.yjs_state);
@@ -388,12 +403,46 @@ export function CareNoteEditor({
       // 1. Save Yjs state
       const state = Y.encodeStateAsUpdate(ydoc);
       const base64 = encodeYjsStateToBase64(state);
-      const { error: saveError } = await supabase
-        .from('care_notes')
-        .update({ yjs_state: base64 })
-        .eq('id', careNoteId);
+      // OPTIMISTIC CONCURRENCY — only on the fallback path.
+      //
+      // When collab is up, Yjs owns merging and a plain write is correct. When
+      // it is down, two clinicians with the note open both write the full
+      // document, and a plain UPDATE means the second silently erases the
+      // first: no error, no version, no trace — the note just loses an
+      // examination finding. That is the case this guards.
+      if (baseVersion !== null) {
+        const { data: newVersion, error: saveError } = await supabase.rpc(
+          'save_care_note_yjs',
+          {
+            p_care_note_id: careNoteId,
+            p_yjs_state: base64,
+            p_expected_version: baseVersion,
+          }
+        );
+        if (saveError) throw saveError;
 
-      if (saveError) throw saveError;
+        if (newVersion === null) {
+          // Someone else saved since this editor loaded. Do NOT retry with the
+          // fresh version — that is precisely the clobber this prevents. Stop,
+          // and make the clinician decide.
+          setConflictDetected(true);
+          setSaveStatus('error');
+          toast.error(
+            'Another clinician saved this note while you were editing. ' +
+            'Your changes are still on screen but have NOT been saved — ' +
+            'reload to see theirs, then re-apply yours.',
+            { duration: 12_000 }
+          );
+          return;
+        }
+        setBaseVersion(newVersion as number);
+      } else {
+        const { error: saveError } = await supabase
+          .from('care_notes')
+          .update({ yjs_state: base64 })
+          .eq('id', careNoteId);
+        if (saveError) throw saveError;
+      }
 
       // 2. Extract content for timeline
       const contentJson = editor.getJSON();
@@ -630,6 +679,24 @@ export function CareNoteEditor({
 
   return (
     <Card className="flex flex-col overflow-hidden">
+      {/* A save that was refused must be impossible to miss. The clinician's
+          text is still on screen and looks saved, which is the dangerous part:
+          without this they close the tab believing the note was written. It
+          stays until reload rather than auto-dismissing. */}
+      {conflictDetected && (
+        <div
+          role="alert"
+          className="border-b border-destructive/40 bg-destructive/10 px-3 py-2 sm:px-6"
+        >
+          <p className="text-xs font-semibold text-destructive">
+            Not saved — another clinician edited this note
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            Your changes are still shown here but were <strong>not</strong> written to the
+            record. Copy anything you need, reload to see the current note, then re-apply.
+          </p>
+        </div>
+      )}
       <CardHeader className="pb-3 shrink-0 px-3 sm:px-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div className="flex items-center gap-2">
