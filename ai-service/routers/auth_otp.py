@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from services import otp
 from services.messaging import DeliveryError, queue_delivery
+from services.session import SessionMintError, mint_session
 from services.supabase_writer import get_service_client
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ class VerifyOTPResponse(BaseModel):
     profile_id: str
     clinic_id: str
     verified: bool = True
+    # A real GoTrue session: recorded, refreshable, revocable. The client hands
+    # these to supabase.auth.setSession() and is signed in exactly as if it had
+    # used a password.
+    access_token: str
+    refresh_token: str
+    expires_in: int
 
 
 def _lookup_profile_by_phone(phone: str) -> dict | None:
@@ -138,6 +145,35 @@ async def verify_otp(request: VerifyOTPRequest) -> VerifyOTPResponse:
         # number" are each an oracle, and the last one is patient enumeration.
         raise HTTPException(status_code=401, detail="That code is not valid. Request a new one.")
 
+    # The code is already consumed at this point, whatever happens next. That
+    # ordering is deliberate: a code that survives a failed session mint could be
+    # replayed, and re-using a one-time credential is worse than making the
+    # patient request a new one.
+    profile = _lookup_profile_by_phone(request.phone)
+    if profile is None or profile["id"] != token["profile_id"]:
+        # The phone moved to a different profile between issue and verify, or the
+        # profile was deleted. Refuse rather than guess which patient this is.
+        logger.error("Profile mismatch on OTP verify for token %s", token["id"])
+        raise HTTPException(status_code=401, detail="That code is not valid. Request a new one.")
+
+    try:
+        session = mint_session(
+            profile_id=profile["id"], phone=request.phone, role=profile["role"]
+        )
+    except SessionMintError as exc:
+        logger.error("Session mint failed after valid OTP: %s", exc)
+        # 503, not 401. The patient did everything right and the failure is ours;
+        # a 401 would send them round the loop entering codes that will keep
+        # working and keep failing.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Signed in, but the session could not be created. Try again shortly.",
+        )
+
     return VerifyOTPResponse(
-        profile_id=token["profile_id"], clinic_id=token["clinic_id"]
+        profile_id=token["profile_id"],
+        clinic_id=token["clinic_id"],
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        expires_in=session.expires_in,
     )

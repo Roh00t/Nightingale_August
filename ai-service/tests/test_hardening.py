@@ -277,3 +277,118 @@ class TestReadTimeProvenance:
         assert verify_quote(
             stored_hash=quote_hash(QUOTE), source_text=reflowed
         ) is ProvenanceVerdict.CURRENT
+
+
+# ---------------------------------------------------------------------------
+# Session minting — turning a verified phone into a real sign-in
+# ---------------------------------------------------------------------------
+
+
+class TestSessionMinting:
+    """
+    The step that makes OTP an actual login rather than a verification oracle.
+
+    The tempting shortcut — self-signing an HS256 JWT with SUPABASE_JWT_SECRET —
+    was measured against this project and *works today*, because the legacy
+    symmetric secret is still enabled alongside the ES256 keys the project
+    publishes. It is still refused here: a self-signed token has no GoTrue
+    session to revoke, no refresh token, and stops verifying on the day Supabase
+    disables symmetric secrets, which is a total patient lockout at a date we do
+    not control.
+    """
+
+    def test_only_patients_get_a_session(self):
+        """
+        The escalation this blocks: a clinician's phone in `profiles` would turn
+        an SMS into a password-free path into a clinical account. Anyone who
+        controls a staff number for sixty seconds becomes that clinician.
+        """
+        from services.session import MINTABLE_ROLES, SessionMintError, mint_session
+
+        assert set(MINTABLE_ROLES) == {"patient"}
+        for role in ["clinician", "staff", "admin", "system", ""]:
+            with pytest.raises(SessionMintError):
+                mint_session(profile_id="p1", phone="+6591234567", role=role)
+
+    def test_sentinel_address_is_structurally_undeliverable(self):
+        """
+        `.invalid` is reserved by RFC 2606 and cannot resolve. The address is an
+        internal primary key that happens to be email-shaped because GoTrue
+        requires one — never a claim that the patient is reachable there.
+        """
+        from services.session import SENTINEL_EMAIL_DOMAIN, sentinel_email
+
+        assert SENTINEL_EMAIL_DOMAIN.endswith(".invalid")
+        assert sentinel_email("abc").endswith(".invalid")
+
+    def test_sentinel_is_deterministic_and_collision_free(self):
+        """
+        Deterministic so a returning patient finds their existing account rather
+        than accumulating a second one; derived from the profile id so two
+        clinics cannot both reach for the same address — which is precisely the
+        collision that made invented front-desk emails dangerous.
+        """
+        from services.session import sentinel_email
+
+        assert sentinel_email("p1") == sentinel_email("p1")
+        assert sentinel_email("p1") != sentinel_email("p2")
+
+    def test_no_self_signed_jwt_path_exists(self):
+        """
+        Asserted structurally, because this is the shortcut a future change is
+        most likely to reach for — it works, right up until it doesn't.
+        """
+        import ast
+        import pathlib
+
+        source = pathlib.Path("services/session.py").read_text()
+        tree = ast.parse(source)
+        called = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "encode" not in called, "session.py signs its own token instead of using GoTrue"
+
+        # AST again, not text: the module docstring names SUPABASE_JWT_SECRET
+        # while explaining why it must not be read, and a grep cannot tell an
+        # explanation from a lookup. Check what is actually passed to
+        # os.environ.get / os.environ[...] instead.
+        env_keys = {
+            arg.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for arg in node.args
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        } | {
+            node.slice.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        }
+        assert "SUPABASE_JWT_SECRET" not in env_keys, (
+            "session.py reads the symmetric secret, which means it is signing its own token"
+        )
+
+    def test_session_is_redeemed_with_the_anon_key(self):
+        """
+        The magiclink exchange must run as an ordinary client would. Redeeming
+        with the service key risks a session carrying service-role authority —
+        an RLS bypass handed to a patient's browser.
+        """
+        import pathlib
+
+        source = pathlib.Path("services/session.py").read_text()
+        verify_call = source[source.index('f"{base}/auth/v1/verify"'):]
+        assert '"apikey": anon' in verify_call[:400]
+
+    def test_response_carries_a_refresh_token(self):
+        """
+        Without one, @supabase/ssr cannot maintain the session and the patient is
+        logged out mid-consultation with no way to continue.
+        """
+        from routers.auth_otp import VerifyOTPResponse
+
+        fields = VerifyOTPResponse.model_fields
+        assert {"access_token", "refresh_token", "expires_in"} <= set(fields)
