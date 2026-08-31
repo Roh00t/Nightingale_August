@@ -93,7 +93,14 @@ class TestDeliveryStatusSemantics:
         rather than defaulting to something reassuring — a comfortable lie here
         is the exact failure this module was written to prevent.
         """
+        # BOTH must be cleared. This test previously relied on
+        # MESSAGING_PROVIDER being ambiently unset, which held only until the
+        # variable was legitimately configured in .env — at which point a test
+        # asserting "no provider" was silently running against a configured one.
+        # A test whose precondition is an absent environment variable has to
+        # establish that absence, not assume it.
         monkeypatch.delenv("MESSAGING_PROVIDER_API_KEY", raising=False)
+        monkeypatch.delenv("MESSAGING_PROVIDER", raising=False)
         assert msg.provider_configured() is False
 
         captured = {}

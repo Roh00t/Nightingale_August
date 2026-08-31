@@ -54,6 +54,18 @@ export async function callAI<T>(
   token: string,
   { timeoutMs = AI_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<T> {
+  // The session token is component state initialised to '' and populated by an
+  // async effect, so a click landing before the session resolves would send
+  // `Authorization: Bearer ` and come back 401 — indistinguishable, to the
+  // clinician, from being signed out. Four of the five call sites did not guard
+  // this; catching it here covers every caller including ones added later.
+  if (!token) {
+    throw new AIServiceError(
+      'unauthorized',
+      'Still signing in — wait a moment and try again.'
+    );
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 

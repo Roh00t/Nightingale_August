@@ -65,15 +65,47 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds, exponential backoff
 
 
+# Upstream deadline for a single Groq attempt.
+#
+# The SDK defaults to no timeout, which means a stalled upstream holds an async
+# worker until the connection is dropped by something else — and under load the
+# service stops answering /health while looking healthy from the outside.
+#
+# 20s sits under the browser's 25s AbortController (frontend/lib/ai_client.ts),
+# deliberately: the server should give up first so the client receives a real
+# 504 it can render, rather than the request vanishing at the browser end with
+# the server still working on a response nobody will read.
+GROQ_TIMEOUT_SECONDS = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "20"))
+
+# The SDK retries internally as well as our own _call_with_retry loop. Left at
+# 0 so retry lives in exactly one place — otherwise MAX_RETRIES attempts each
+# become MAX_RETRIES * (1 + sdk_retries), and a rate-limited key turns into a
+# multi-minute hang instead of a fast failure.
+GROQ_SDK_RETRIES = 0
+
+
 def _get_client() -> AsyncGroq:
     """Create a Groq async client. Reads GROQ_API_KEY from the environment."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
+        # Logged as well as raised. The exception reaches the caller as a 503,
+        # but a misconfigured deployment shows up as "the AI is broken" in the
+        # UI with nothing in the service log saying why — so the cause is
+        # recorded where an operator will actually look.
+        logger.error(
+            "GROQ_API_KEY is not set. Every summarisation, highlight and "
+            "patient-draft call will fail until it is configured. Check the "
+            "Railway environment; /ready reports this as groq_api_key=false."
+        )
         raise RuntimeError(
             "GROQ_API_KEY environment variable is not set. "
             "Obtain a key from https://console.groq.com and export it."
         )
-    return AsyncGroq(api_key=api_key)
+    return AsyncGroq(
+        api_key=api_key,
+        timeout=GROQ_TIMEOUT_SECONDS,
+        max_retries=GROQ_SDK_RETRIES,
+    )
 
 
 async def _call_with_retry(
