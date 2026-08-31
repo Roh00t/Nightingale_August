@@ -211,7 +211,12 @@ def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
         session = client.post(
             f"{base}/auth/v1/verify",
             headers={"apikey": anon, "Content-Type": "application/json"},
-            json={"type": "magiclink", "token": hashed_token},
+            # `token_hash`, not `token`. GoTrue treats `token` as the plaintext
+            # OTP and then demands an accompanying email or phone, rejecting the
+            # request with "Only an email address or phone number should be
+            # provided on verify". The hashed form is the one an admin-generated
+            # link carries. Caught by running the exchange, not by reading it.
+            json={"type": "magiclink", "token_hash": hashed_token},
         )
         if session.status_code != 200:
             logger.error("Session exchange failed: %s", session.status_code)

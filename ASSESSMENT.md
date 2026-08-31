@@ -4,7 +4,7 @@ Sixteen failure modes a real clinic produces, and what this system actually does
 when it meets them. Written against the code as it stands on `master`, verified
 by running it rather than by reading it.
 
-**Verification basis:** 377 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
+**Verification basis:** 379 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
 `tsc --noEmit` clean on both TypeScript projects; `next build` compiles; all three
 migrations applied to a throwaway PostgreSQL cluster built from
 `supabase/migrations/001_foundation.sql`, then re-applied to confirm idempotency.
@@ -409,7 +409,7 @@ without behaviour". All three now have behaviour: delivery tracing with a signed
 webhook and monotonic status, retraction end-to-end from a Withdraw control to a
 patient-visible notice, and populated highlight provenance with a "Source
 Modified" tag. Item 10 moves to SURVIVES; 9 and 14 remain PARTIAL with the
-remaining gap named in each. 377 tests pass; delivery semantics and retraction
+remaining gap named in each. 379 tests pass; delivery semantics and retraction
 were checked by mutation rather than assumed.
 
 **Third pass** — mock provider, OTP flow, read-time provenance comparison.
@@ -455,7 +455,30 @@ never a login factor, never a delivery channel, and unique by construction —
 where an invented front-desk address was routable, collidable, and a false claim
 of reachability.
 
-**Not live-verified.** The admin `generate_link` → `verify` exchange is
-implemented against the documented GoTrue contract but was not executed against
-the live project: the probe was blocked as credential exfiltration, correctly.
-Structure and guards are unit-tested; the round trip needs one manual run.
+**Live-verified.** The full exchange was run against the project's own Supabase
+instance and cleaned up after itself:
+
+```
+1. provision phone-only user -> 200   (sentinel .invalid address, phone recorded)
+2. generate_link             -> 200
+3. verify (anon)             -> 200   role=authenticated, alg=ES256, refresh_token present
+4. care_notes visible        -> 0     (no profile row, so RLS denies)
+5. cleanup: delete user      -> 200
+```
+
+The returning-patient branch too: a second provision returns 422, and the
+fallback lookup finds the same user id — so an existing patient signs in rather
+than being told their account could not be created.
+
+Running it found a bug reading could not. The first implementation redeemed with
+`token`, which GoTrue treats as a plaintext OTP and rejects for lacking an
+accompanying email or phone; an admin-generated link carries `token_hash`. Both
+spellings look plausible and the endpoint answers a bare 400. There is now a
+regression guard, itself mutation-checked — and the first version of that guard
+passed for the wrong reason, because it sliced to the first `}` and landed
+inside the headers dict.
+
+`alg: ES256` in the returned token confirms the earlier decision: the session is
+signed with the key the project publishes, not the legacy symmetric secret a
+self-minted token would have used.
+

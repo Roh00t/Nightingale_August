@@ -61,7 +61,7 @@ cursors and two cursors in one document, record that section against
 ```bash
 # 1. Verify the whole suite is green — this is the claim the demo rests on
 cd ai-service && .venv/bin/python -m pytest tests/ -q
-# expect: 377 passed
+# expect: 379 passed
 
 # 2. Seed both clinics
 cd .. && ./scripts/seed.sh

@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**377 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**379 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -36,7 +36,7 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
 | [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
-| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--28) | 28 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read |
+| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--30) | 30 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read |
 
 ---
 
@@ -469,7 +469,7 @@ regression, each fails a test.
 
 ---
 
-## 15. Mock provider, OTP and read-time provenance — 28
+## 15. Mock provider, OTP and read-time provenance — 30
 
 `ai-service/tests/test_hardening.py` · unit + AST
 

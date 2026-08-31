@@ -392,3 +392,40 @@ class TestSessionMinting:
 
         fields = VerifyOTPResponse.model_fields
         assert {"access_token", "refresh_token", "expires_in"} <= set(fields)
+
+    def test_verify_sends_token_hash_not_token(self):
+        """
+        Regression. The first implementation sent `token`, which GoTrue reads as
+        a plaintext OTP and then rejects for lacking an accompanying email or
+        phone: "Only an email address or phone number should be provided on
+        verify". An admin-generated link carries the hashed form.
+
+        Reading the code could not catch this — both spellings look plausible
+        and the endpoint returns 400 rather than anything descriptive. Running
+        the exchange against a live project did.
+        """
+        import pathlib
+
+        source = pathlib.Path("services/session.py").read_text()
+        verify_call = source[source.index('f"{base}/auth/v1/verify"'):]
+        # Anchor on the json= argument. Slicing to the first "}" lands inside
+        # the headers dict, which is how the first version of this test passed
+        # for the wrong reason.
+        json_arg = verify_call[verify_call.index("json="):]
+        json_arg = json_arg[: json_arg.index("\n")]
+        assert '"token_hash"' in json_arg, f"verify must redeem with token_hash, got: {json_arg}"
+
+    def test_duplicate_provision_is_not_fatal(self):
+        """
+        A returning patient re-provisions. GoTrue answers 422 for a duplicate
+        email, which must fall through to a lookup — treating it as an error
+        would tell an existing patient their account could not be created.
+        Verified live: second create returns 422, the fallback finds the same id.
+        """
+        import inspect
+
+        from services.session import ensure_auth_user
+
+        src = inspect.getsource(ensure_auth_user)
+        assert "422" in src, "the duplicate status is not handled"
+        assert "filter" in src, "there is no fallback lookup for an existing user"
