@@ -142,14 +142,39 @@ app = FastAPI(
 # CORS middleware
 # ---------------------------------------------------------------------------
 
-ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://localhost:8080",
-).split(",")
+# Origins allowed to call this service from a browser.
+#
+# The production frontend is listed here in code rather than left to CORS_ORIGINS
+# alone. It was missing, and the symptom is worth recording because it does not
+# look like a configuration problem from the browser: Starlette answers a
+# preflight from an unlisted origin with 400 and NO access-control-allow-origin
+# header, so DevTools reports a generic CORS failure and the request never
+# leaves. Measured against the deployment — the Vercel origin got 400 with no
+# allow-origin, localhost got 200 with one.
+#
+# Explicit list, never "*": allow_credentials=True with a wildcard is rejected
+# outright by browsers, and this service is called with an Authorization header.
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://nightingale-august-frontend-6ktv.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+]
+
+# CORS_ORIGINS still overrides, so a new deployment URL can be admitted from the
+# Railway dashboard without a code change. Setting it REPLACES the list rather
+# than extending it — an override that silently kept the defaults would make it
+# impossible to narrow the list, which is the reason to have an override.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", ",".join(DEFAULT_ALLOWED_ORIGINS)).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in ALLOWED_ORIGINS],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

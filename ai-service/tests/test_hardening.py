@@ -429,3 +429,85 @@ class TestSessionMinting:
         src = inspect.getsource(ensure_auth_user)
         assert "422" in src, "the duplicate status is not handled"
         assert "filter" in src, "there is no fallback lookup for an existing user"
+
+
+# ---------------------------------------------------------------------------
+# CORS — the production origin must be able to reach this service
+# ---------------------------------------------------------------------------
+
+
+class TestCORSAllowsTheDeployedFrontend:
+    """
+    The production frontend was absent from allow_origins, and the symptom does
+    not look like configuration from the browser: Starlette answers a preflight
+    from an unlisted origin with 400 and NO access-control-allow-origin header,
+    so DevTools reports a generic CORS failure and the request never leaves.
+
+    Measured against the deployment before the fix — the Vercel origin got 400
+    with no allow-origin header while localhost got 200 with one.
+    """
+
+    PROD = "https://nightingale-august-frontend-6ktv.vercel.app"
+
+    def _preflight(self, origin: str):
+        from fastapi.testclient import TestClient
+
+        import main
+
+        return TestClient(main.app).options(
+            "/api/ai/summarize",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    def test_production_origin_is_allowed(self):
+        r = self._preflight(self.PROD)
+        assert r.status_code == 200, f"preflight rejected: {r.status_code}"
+        assert r.headers.get("access-control-allow-origin") == self.PROD
+
+    def test_local_dev_origins_still_work(self):
+        """Both spellings. 127.0.0.1 and localhost are distinct origins to a browser."""
+        for origin in ("http://localhost:3000", "http://127.0.0.1:3000"):
+            r = self._preflight(origin)
+            assert r.status_code == 200, f"{origin} rejected"
+            assert r.headers.get("access-control-allow-origin") == origin
+
+    def test_unlisted_origin_is_still_refused(self):
+        """
+        The control. Adding an origin must not have widened the policy — the
+        failure mode of a careless fix here is `allow_origins=["*"]`, which
+        browsers reject outright alongside allow_credentials anyway.
+        """
+        r = self._preflight("https://evil.example.com")
+        assert r.headers.get("access-control-allow-origin") is None
+
+    def test_no_wildcard_with_credentials(self):
+        """
+        `*` plus allow_credentials is rejected by every browser, so a wildcard
+        here would not loosen security — it would silently break every
+        authenticated call, which is harder to diagnose.
+        """
+        import main
+
+        assert "*" not in main.ALLOWED_ORIGINS
+
+    def test_env_override_replaces_rather_than_extends(self, monkeypatch):
+        """
+        CORS_ORIGINS replaces the default list. An override that kept the
+        defaults could never narrow the list, which is the main reason to have
+        an override at all.
+        """
+        import importlib
+
+        monkeypatch.setenv("CORS_ORIGINS", "https://only-this.example.com")
+        import main
+
+        importlib.reload(main)
+        try:
+            assert main.ALLOWED_ORIGINS == ["https://only-this.example.com"]
+        finally:
+            monkeypatch.delenv("CORS_ORIGINS", raising=False)
+            importlib.reload(main)

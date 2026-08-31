@@ -83,6 +83,7 @@ still shows **"Local Only"**, which is the designed fallback.
 | `MESSAGING_PROVIDER` | `mock` | No provider: deliveries stay `queued` — honest, but nothing is sent |
 | `MESSAGING_WEBHOOK_SECRET` | value from root `.env` | Webhook fails closed with 503; delivery status never advances |
 | `AI_SERVICE_SELF_URL` | the Railway URL | Mock callback posts to localhost and never arrives |
+| `CORS_ORIGINS` | *optional* | Unset uses the built-in list, which now includes the Vercel origin. Set it only to narrow or to admit a preview URL |
 
 Generate the OTP pepper **separately** — reusing the webhook secret would make
 one leak compromise both:
@@ -110,7 +111,28 @@ every visitor.
 
 ---
 
-## 4. Push to trigger the Vercel build
+## 4. Redeploy Railway — the CORS fix lives in the service, not the frontend
+
+The production origin was missing from `allow_origins`, so every browser call
+from Vercel failed preflight with 400 and no `access-control-allow-origin`
+header. The fix is in `ai-service/main.py`, so **Railway must redeploy** — a
+Vercel build alone changes nothing.
+
+Verify after it redeploys:
+
+```bash
+curl -s -o /dev/null -D - -X OPTIONS \
+  https://nightingaleaugust-3zme-production.up.railway.app/api/ai/summarize \
+  -H "Origin: https://nightingale-august-frontend-6ktv.vercel.app" \
+  -H "Access-Control-Request-Method: POST" | grep -i access-control-allow-origin
+```
+
+Expect the Vercel origin echoed back. No header means it has not picked up the
+change.
+
+---
+
+## 5. Push to trigger the Vercel build
 
 Run the migrations first. The deployed frontend reads columns that migrations 2
 and 3 create, so deploying ahead of them shows clinicians an empty Top Card.
@@ -121,7 +143,7 @@ git push origin master
 
 ---
 
-## 5. Verify before the panel
+## 6. Verify before the panel
 
 ```bash
 curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
