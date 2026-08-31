@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**381 automated tests, runnable offline with no credentials.**
+**398 automated tests, runnable offline with no credentials.**
 
 **Live deployment.** Three tiers, three hosts:
 
@@ -739,7 +739,7 @@ once live transcription is running.
 ## 7. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 381 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 398 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs

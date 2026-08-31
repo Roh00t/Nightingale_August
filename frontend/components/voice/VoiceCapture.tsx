@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, Square, Loader2, AlertTriangle, FileAudio, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { aiUrl } from '@/lib/ai_client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
@@ -148,11 +149,14 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
       const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
       form.append('audio', blob, `consult.${extension}`);
 
-      const base = process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000';
       const params = new URLSearchParams({ interaction_type: interactionTypeFor(userRole) });
       // Filing is server-side; see careNoteId on the props above.
       if (careNoteId) params.set('care_note_id', careNoteId);
-      const url = `${base}/api/ai/transcribe?${params.toString()}`;
+      // aiUrl(), not a second hand-rolled concatenation. This component built
+      // its own URL from the same env var, so a trailing slash in the Vercel
+      // dashboard broke it independently of lib/ai_client.ts — and a fix
+      // applied to one would have left the other silently 404ing.
+      const url = aiUrl('transcribe', params);
 
       // A deliberately longer deadline than the 25s used for JSON calls in
       // lib/ai_client.ts. This request uploads up to 5MB and then waits on

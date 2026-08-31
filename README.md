@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**381 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
+**398 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
 
 ### **https://nightingale-august-frontend-6ktv.vercel.app**
 
@@ -113,7 +113,7 @@ AI service will not report ready without it.
 cd ai-service && .venv/bin/python -m pytest tests/ -v
 ```
 
-Expect **381 passed**. The suites build an ephemeral PostgreSQL cluster, apply
+Expect **398 passed**. The suites build an ephemeral PostgreSQL cluster, apply
 `supabase/migrations/001_foundation.sql` verbatim, and seed both demo clinics.
 No cloud project, no Docker, no credentials, and no metered API calls.
 
@@ -625,7 +625,7 @@ Full design rationale, failure modes and measured latency are in
 ## Testing
 
 ```bash
-npm test                     # 381 pytest tests (uses ai-service/.venv)
+npm test                     # 398 pytest tests (uses ai-service/.venv)
 npm run typecheck            # tsc --noEmit across frontend + collab-server
 npm run build                # Next.js production build
 node scripts/measure_glance.mjs --n 100    # glance P95, needs the app running

@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**381 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**398 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -36,7 +36,8 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
 | [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
-| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--30) | 30 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read |
+| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--38) | 38 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
+| [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
 
 ---
 
@@ -469,7 +470,7 @@ regression, each fails a test.
 
 ---
 
-## 15. Mock provider, OTP and read-time provenance — 30
+## 15. Mock provider, OTP and read-time provenance — 38
 
 `ai-service/tests/test_hardening.py` · unit + AST
 
@@ -505,6 +506,24 @@ because a tag that always fires is a tag nobody reads. Unknown states resolve to
 
 Checked by mutation: defaulting the mock on, letting it accept any destination,
 and trusting version over hash each fail tests.
+
+
+---
+
+## 16. Frontend/backend route contract — 9
+
+`ai-service/tests/test_frontend_route_contract.py`
+
+The two sides are different languages in different build pipelines, so a renamed
+FastAPI route or a mistyped path in a component produces a 404 at runtime and
+nothing at build time. This walks the actual frontend source, extracts every AI
+path it calls, and asserts each resolves to a route the app serves.
+
+`test_frontend_is_actually_scanned` guards the guard: if the glob stops finding
+files — a moved directory, a renamed helper — every other assertion would pass
+vacuously while checking nothing.
+
+Checked by mutation: renaming `/summarize` to `/summarise` fails two tests.
 
 ---
 

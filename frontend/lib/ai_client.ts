@@ -46,7 +46,37 @@ export class AIServiceError extends Error {
   }
 }
 
-const BASE = process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000';
+const RAW_BASE = process.env.NEXT_PUBLIC_AI_SERVICE_URL || 'http://localhost:8000';
+
+/** Base URL with any trailing slashes removed. */
+export const AI_BASE_URL = RAW_BASE.replace(/\/+$/, '');
+
+/**
+ * Join the AI service base URL to an endpoint path.
+ *
+ * This exists because the base comes from a dashboard field a human types, and
+ * `https://host.railway.app/` is the shape a human types. Concatenating that
+ * with `/api/ai/summarize` produces `//api/ai/summarize`, and FastAPI answers
+ * that with a hard **404** — measured, not assumed: the single-slash form
+ * returns 401 (route found, auth rejected), both double-slash forms return 404.
+ *
+ * A 404 here is unusually misleading. It reads as "that endpoint does not
+ * exist", so the natural next move is to go looking for a missing route or a
+ * broken deployment, when the actual fault is one character in an environment
+ * variable that nothing validates.
+ *
+ * Every path is also forced under `/api/ai/`. The routers mount there
+ * (`APIRouter(prefix="/api/ai")`), and a caller passing a bare `'summarize'`
+ * would otherwise build a URL that 404s for a different reason entirely.
+ */
+export function aiUrl(path: string, params?: URLSearchParams): string {
+  // Strip any leading slashes and an existing prefix, then re-add exactly one.
+  // Accepting both '/api/ai/summarize' and 'summarize' means a call site cannot
+  // get this wrong in either direction.
+  const clean = path.replace(/^\/+/, '').replace(/^api\/ai\//, '');
+  const query = params && [...params.keys()].length > 0 ? `?${params.toString()}` : '';
+  return `${AI_BASE_URL}/api/ai/${clean}${query}`;
+}
 
 export async function callAI<T>(
   path: string,
@@ -76,7 +106,7 @@ export async function callAI<T>(
   signal?.addEventListener('abort', onExternalAbort);
 
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(aiUrl(path), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
