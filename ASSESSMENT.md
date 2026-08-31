@@ -4,7 +4,7 @@ Sixteen failure modes a real clinic produces, and what this system actually does
 when it meets them. Written against the code as it stands on `master`, verified
 by running it rather than by reading it.
 
-**Verification basis:** 349 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
+**Verification basis:** 371 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
 `tsc --noEmit` clean on both TypeScript projects; `next build` compiles; all three
 migrations applied to a throwaway PostgreSQL cluster built from
 `supabase/migrations/001_foundation.sql`, then re-applied to confirm idempotency.
@@ -368,7 +368,7 @@ As above.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Phone/WhatsApp identity | PARTIAL — schema only, no flow |
+| 1 | Phone/WhatsApp identity | PARTIAL — OTP flow live, session minting not wired |
 | 2 | Multi-clinic RLS isolation | **SURVIVES** |
 | 3 | Log scrubbing | PARTIAL — structured IDs only |
 | 4 | Verifiable redaction path | **SURVIVES** |
@@ -376,12 +376,12 @@ As above.
 | 6 | Timeout guardrails | **SURVIVES** |
 | 7 | 503 outage fallback | PARTIAL — one trigger surface of four |
 | 8 | Note concurrency (OCC) | **SURVIVES** |
-| 9 | Delivery tracing | PARTIAL — traced honestly, no provider wired |
+| 9 | Delivery tracing | PARTIAL — loop closed on mock, no live provider |
 | 10 | Maker-checker + retraction | **SURVIVES** |
 | 11 | Conflict engine precedence | PARTIAL — detects, does not rank |
 | 12 | Confidence metrics | **SURVIVES** |
 | 13 | Ranking safety floor | **SURVIVES** |
-| 14 | Highlight provenance | PARTIAL — populated on the scribe path only |
+| 14 | Highlight provenance | PARTIAL — verified at read, scribe write path only |
 
 **If this went live tomorrow, the first thing to break is still item 9 — but for
 a different reason than before.** Delivery is now traced honestly rather than not
@@ -409,5 +409,28 @@ without behaviour". All three now have behaviour: delivery tracing with a signed
 webhook and monotonic status, retraction end-to-end from a Withdraw control to a
 patient-visible notice, and populated highlight provenance with a "Source
 Modified" tag. Item 10 moves to SURVIVES; 9 and 14 remain PARTIAL with the
-remaining gap named in each. 349 tests pass; delivery semantics and retraction
+remaining gap named in each. 371 tests pass; delivery semantics and retraction
 were checked by mutation rather than assumed.
+
+**Third pass** — mock provider, OTP flow, read-time provenance comparison.
+
+Item 9's loop now closes: dispatch to a reserved test range, an asynchronous
+callback over the real signed HTTP webhook, monotonic status applied. Verified
+end to end against a live uvicorn instance — `delivered`, `failed`, dispatch
+rejection, and the `silent` case that stays at `sent`. The mock has no
+privileged path into delivery state, asserted by AST rather than grep. Still
+PARTIAL: no live provider, so no real patient is contacted.
+
+Item 1 gains `POST /api/auth/request-otp` and `POST /api/auth/verify-otp` —
+peppered, phone-bound hashes; 5-minute TTL; capped issuance *and* attempts;
+identical responses for known and unknown numbers so the endpoint cannot be used
+to enumerate a clinic's patients. Still PARTIAL: verification returns the
+identity but does not mint a Supabase session, so the fake-email workaround is
+removed at the identity layer without a completed sign-in.
+
+Item 14 gains `verify_quote()` with a four-state verdict. The motivating case —
+a dose edited from 10mg to 100mg *within the same care-note version* — now
+reports MODIFIED where version comparison alone said CURRENT. Still PARTIAL:
+only the scribe path writes the hash.
+
+371 tests. All three checked by mutation.

@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from routers import (
+    auth_otp,
     conflicts,
     highlights,
     messaging,
@@ -201,6 +202,7 @@ app.include_router(scribe.router)
 app.include_router(conflicts.router)
 app.include_router(transcribe.router)
 app.include_router(messaging.router)
+app.include_router(auth_otp.router)
 
 
 # ---------------------------------------------------------------------------

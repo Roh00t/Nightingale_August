@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**349 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**371 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -36,6 +36,7 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
 | [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
+| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--22) | 22 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read |
 
 ---
 
@@ -464,6 +465,46 @@ it — while `10mg` vs `1.0mg`, and `eGFR 45` vs `eGFR 54`, do not.
 
 Checked by mutation: making `sent` count as receipt, or allowing status
 regression, each fails a test.
+
+
+---
+
+## 15. Mock provider, OTP and read-time provenance — 22
+
+`ai-service/tests/test_hardening.py` · unit + AST
+
+Three mechanisms that existed but were never exercised end to end. In all three
+the failure is silent, which is what the tests are aimed at.
+
+**Mock provider.** Enabling is `== "mock"`, never `!= "live"` — a typo or a
+missing variable gives *no* provider rather than the simulator, so a staging
+convenience cannot reach production and start reporting delivery for messages
+nobody sent. The mock refuses any destination outside a reserved test range, so
+it cannot contact a real patient even pointed at a real number. And an **AST
+check**, not a grep, asserts it never references `apply_provider_status`: its
+callback must traverse the signed HTTP webhook like any provider, because the
+risk in this subsystem is authenticity and a mock that shortcuts the signature
+check tests the happy path of the wrong thing. (The grep version of this test
+failed on the module's own docstring, which names the function while explaining
+why it must not be called.)
+
+**OTP.** Hashes are peppered and bound to the destination phone, so a leaked
+code cannot be replayed against another account and a database leak is not a
+10^6 rainbow table. Missing pepper fails closed. Request and attempt caps are
+asserted together, because capping guesses without capping issuance is
+pointless — each new request mints a fresh code. Enumeration is covered
+structurally: an unknown number returns the same response as a known one, and
+every verify failure funnels through one message, since "expired" vs "wrong" vs
+"no such number" are each an oracle and the last is patient enumeration.
+
+**Read-time provenance.** The case that motivated it: a dose edited from `10mg`
+to `100mg` **inside the same care-note version**. Version alone reports that as
+current; the hash catches it. An edit to an unrelated sentence stays current,
+because a tag that always fires is a tag nobody reads. Unknown states resolve to
+`UNVERIFIABLE`, never `CURRENT`.
+
+Checked by mutation: defaulting the mock on, letting it accept any destination,
+and trusting version over hash each fail tests.
 
 ---
 

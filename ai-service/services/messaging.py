@@ -77,6 +77,16 @@ class DeliveryRecord:
 
 
 def provider_configured() -> bool:
+    """
+    Whether anything will actually be dispatched.
+
+    The mock counts: it exercises the full accept-then-callback loop, so
+    treating it as "no provider" would leave deliveries at `queued` and the
+    status machine unexercised. A live provider still requires its API key.
+    """
+    provider = os.environ.get("MESSAGING_PROVIDER", "").strip().lower()
+    if provider == "mock":
+        return True
     return bool(os.environ.get("MESSAGING_PROVIDER_API_KEY"))
 
 
@@ -84,14 +94,28 @@ def _dispatch(channel: str, destination: str, body: str) -> tuple[str, str]:
     """
     Hand the message to the provider. Returns (provider_name, message_id).
 
-    Unimplemented on purpose. When a provider is wired here, the only correct
-    behaviour is to return its message id and leave the status at `queued` —
-    the acceptance response is not delivery, and treating it as such would
-    recreate the failure this module exists to prevent.
+    Returns an id and nothing else. A provider's acceptance response is not
+    delivery, so this deliberately cannot report one — the only thing that
+    advances status past `sent` is a signed webhook.
+
+    Selection is explicit. `MESSAGING_PROVIDER=mock` routes to the reserved-range
+    simulator; anything else raises. There is no default provider, because a
+    default is how a staging convenience reaches production and starts reporting
+    delivery for messages nobody sent.
     """
+    provider = os.environ.get("MESSAGING_PROVIDER", "").strip().lower()
+
+    if provider == "mock":
+        from services.messaging_mock import dispatch as mock_dispatch
+
+        # Refuses any destination outside its reserved test range, so a mock
+        # cannot contact a real patient even if pointed at a real number.
+        return mock_dispatch(channel, destination, body)
+
     raise NotImplementedError(
-        "No messaging provider is wired. Implement _dispatch and set "
-        "MESSAGING_PROVIDER_API_KEY to enable real sending."
+        f"No messaging provider is wired (MESSAGING_PROVIDER={provider or "unset"!r}). "
+        "Set MESSAGING_PROVIDER=mock for the reserved-range simulator, or "
+        "implement a live branch here."
     )
 
 

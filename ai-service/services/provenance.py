@@ -23,6 +23,9 @@ and a consumer can branch on it without guessing.
 
 from __future__ import annotations
 
+import re
+from enum import Enum
+
 from typing import Any, Literal
 
 SOURCE_TYPE_SCRIBE_SESSION = "scribe_session"
@@ -142,3 +145,115 @@ def quote_hash(quote: str) -> str:
     import hashlib
 
     return hashlib.sha256(normalise_quote(quote).encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Read-time verification — Audit 16
+# ---------------------------------------------------------------------------
+
+
+class ProvenanceVerdict(str, Enum):
+    """
+    Whether a highlight's supporting text still says what it said.
+
+    Four states, not two. "Modified" and "unverifiable" are different facts and
+    collapsing them loses the distinction that matters: one means the record
+    changed, the other means we cannot tell — and only the first is a clinical
+    signal about the note.
+    """
+
+    CURRENT = "current"
+    #: The quote is gone from the source, or its text changed.
+    MODIFIED = "modified"
+    #: The source entry no longer exists at all.
+    SOURCE_DELETED = "source_deleted"
+    #: Extracted before provenance was tracked, so currency cannot be asserted.
+    UNVERIFIABLE = "unverifiable"
+
+    @property
+    def is_current(self) -> bool:
+        return self is ProvenanceVerdict.CURRENT
+
+
+def verify_quote(
+    *,
+    stored_hash: str | None,
+    source_text: str | None,
+    stored_version: int | None = None,
+    current_version: int | None = None,
+) -> ProvenanceVerdict:
+    """
+    Decide whether a highlight may still claim its source.
+
+    Version alone is not enough, which is the gap this closes. `care_notes.version`
+    advances on a care-note save; a clinician editing the *text of a timeline
+    entry* — correcting "10mg" to "100mg" in yesterday's note — can leave the
+    version untouched. The highlight then still points at that sentence, reads as
+    current, and the quote it was derived from no longer exists in the record.
+
+    So the hash is authoritative and the version is a cheap pre-check. They are
+    combined by taking the WORSE of the two verdicts, never the better:
+
+      * hash matches, version moved  -> CURRENT. The supporting sentence is
+        untouched; something else in the note changed, which is not this
+        highlight's concern. Flagging it would produce a "Source Modified" tag on
+        every highlight after any edit anywhere, and a tag that always fires is a
+        tag nobody reads.
+      * hash differs                 -> MODIFIED, whatever the version says.
+      * no stored hash               -> fall back to the version comparison, and
+        UNVERIFIABLE if that is unavailable too.
+
+    Everything unknown resolves toward "not current". A false "Source Modified"
+    costs a clinician a glance at the source; a false "current" lets them act on
+    a quote the record no longer contains.
+    """
+    if source_text is None:
+        return ProvenanceVerdict.SOURCE_DELETED
+
+    if stored_hash:
+        # The quote must still be present in the source text, and hash to the
+        # same value. Containment is checked on the NORMALISED text so that a
+        # reflow does not read as an edit, matching how the hash was computed.
+        if quote_hash(source_text) == stored_hash:
+            return ProvenanceVerdict.CURRENT
+
+        # The stored hash is of the extracted span, not the whole entry, so a
+        # whole-entry hash will not match. Look for the span inside the entry:
+        # if some substring of the source still hashes to the stored value, the
+        # supporting sentence survived an edit elsewhere.
+        if _contains_quote_with_hash(source_text, stored_hash):
+            return ProvenanceVerdict.CURRENT
+
+        return ProvenanceVerdict.MODIFIED
+
+    # No hash recorded. Fall back to the version, which is weaker but better
+    # than asserting currency.
+    if stored_version is None or current_version is None:
+        return ProvenanceVerdict.UNVERIFIABLE
+    return (
+        ProvenanceVerdict.CURRENT
+        if stored_version == current_version
+        else ProvenanceVerdict.MODIFIED
+    )
+
+
+def _contains_quote_with_hash(source_text: str, stored_hash: str) -> bool:
+    """
+    Whether any sentence-ish span of `source_text` hashes to `stored_hash`.
+
+    Bounded on purpose. Checking every substring is quadratic in the length of a
+    clinical note and would run on every highlight on every page load; splitting
+    on sentence boundaries and testing whole sentences plus adjacent pairs
+    covers how quotes are actually extracted while staying linear.
+
+    A quote spanning three or more sentences will not be found and reports
+    MODIFIED. That is the safe direction — it over-warns rather than falsely
+    reassures — and it is a real limitation, not a claim of completeness.
+    """
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", source_text) if p.strip()]
+    for i, part in enumerate(parts):
+        if quote_hash(part) == stored_hash:
+            return True
+        if i + 1 < len(parts) and quote_hash(f"{part} {parts[i + 1]}") == stored_hash:
+            return True
+    return False

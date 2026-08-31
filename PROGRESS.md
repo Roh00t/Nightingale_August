@@ -83,7 +83,7 @@ Legend: `[x]` done & verified · `[~]` partial · `[ ]` not started
 - [x] Synthetic data only
 - [x] TLS/at-rest — documented in the technical brief with a per-layer table
 
-### 6. Micro-tests — **349 passing, 0 failing, no credentials required**
+### 6. Micro-tests — **371 passing, 0 failing, no credentials required**
 - [x] `test_rbac_scope` — 18, executing against real RLS
 - [x] `test_revision_history` — 16, incl. non-tautological revert + metadata-only audit
 - [x] `test_highlight_provenance` — 21 (12 offline schema + 9 DB)
@@ -295,7 +295,7 @@ that is not currently live. Stated plainly rather than presented as shipped.
 Clinical contradictions between authors are a different concern and **are**
 live, at `POST /api/ai/conflicts`.
 
-**Suite: 349 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
+**Suite: 371 passing.** Full per-suite documentation in [TESTS.md](TESTS.md).
 
 ---
 
