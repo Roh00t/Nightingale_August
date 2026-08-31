@@ -27,6 +27,7 @@ from services.provenance import (
     ENTRY_TYPE_BY_INTERACTION,
     entry_type_for,
     locate_span,
+    quote_hash,
     scribe_session_pointer,
     timeline_entry_pointer,
 )
@@ -110,6 +111,10 @@ async def scribe(
     # Clinic scoping, applied by hand because the service-role key bypasses RLS.
     try:
         care_note = resolve_care_note(request.care_note_id, caller_clinic_id=caller.clinic_id)
+        # Version the extraction is derived from, recorded on each highlight so
+        # a later edit to the note makes the highlight detectably stale rather
+        # than silently pointing at changed text.
+        note_version = care_note.get("version")
     except SupabaseUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except AccessDenied as exc:
@@ -285,6 +290,13 @@ async def _build_highlights(
                 "risk_level": risk,
                 "importance_score": score,
                 "provenance_pointer": pointer,
+                # Addressable provenance (Audit 16). Without these two, a
+                # click-through lands on whatever the source says *now* with no
+                # signal that it changed — so a clinician reads different text
+                # than the highlight was derived from and concludes the
+                # highlight was wrong, or that the new text supports it.
+                "source_note_version": note_version,
+                "exact_quote_hash": quote_hash(snippet),
                 "created_by": "system",
             }
         )

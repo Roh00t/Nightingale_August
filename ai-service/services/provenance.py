@@ -107,3 +107,38 @@ def locate_span(haystack: str, needle: str) -> tuple[int, int]:
         trimmed = trimmed[: int(len(trimmed) * 0.8)]
 
     return (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Quote fingerprinting — Audit 16
+# ---------------------------------------------------------------------------
+
+
+def normalise_quote(quote: str) -> str:
+    """
+    Canonical form of a supporting quote, for hashing.
+
+    Whitespace is collapsed and case is folded because neither carries clinical
+    meaning: a clinician reflowing a paragraph or fixing capitalisation has not
+    changed what the note says, and a highlight that reported "Source Modified"
+    after a cosmetic edit would train people to ignore the warning. Everything
+    else is preserved — punctuation and digits especially, since "10mg" and
+    "1.0mg" must hash differently.
+    """
+    return " ".join(quote.split()).casefold()
+
+
+def quote_hash(quote: str) -> str:
+    """
+    sha256 of the normalised quote.
+
+    Hashing the quote rather than the whole entry is deliberate. An entry is
+    often long and edited repeatedly; hashing all of it would invalidate every
+    highlight derived from it whenever any unrelated sentence changed, and the
+    resulting noise makes the signal worthless. The quote is the span the claim
+    actually rests on, so a change to it is exactly the case a clinician needs
+    to be told about.
+    """
+    import hashlib
+
+    return hashlib.sha256(normalise_quote(quote).encode("utf-8")).hexdigest()

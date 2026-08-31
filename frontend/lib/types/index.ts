@@ -51,6 +51,8 @@ export interface CareNote {
   glance_cache_updated_at: string;
   created_at: string;
   updated_at: string;
+  /** Optimistic-concurrency counter; also the provenance anchor for highlights. */
+  version?: number | null;
 }
 
 export interface GlanceCache {
@@ -86,6 +88,16 @@ export interface TimelineEntry {
   updated_at: string;
   // Joined fields
   author?: Profile;
+  /**
+   * A patient message withdrawn after sending. The entry is marked, never
+   * deleted: the patient already read it, and a message that silently vanishes
+   * is worse than one shown as withdrawn — they remember being told something
+   * and can no longer find it, and an auditor cannot reconstruct what was sent.
+   */
+  is_retracted?: boolean;
+  retracted_at?: string | null;
+  retracted_by?: string | null;
+  retraction_reason?: string | null;
 }
 
 export interface NoteVersion {
@@ -150,6 +162,35 @@ export interface Highlight {
   /** Confidence fell below the abstention threshold. */
   abstained?: boolean;
   safety_metadata?: SafetyMetadata | null;
+
+  /**
+   * Addressable provenance. `care_notes.version` at extraction time, and a
+   * sha256 of the normalised supporting quote.
+   *
+   * Both may be null on highlights created before this was tracked. Null is
+   * treated as "changed", not "unchanged" — see isSourceModified below.
+   */
+  source_note_version?: number | null;
+  exact_quote_hash?: string | null;
+}
+
+/**
+ * Whether a highlight's source has moved since the claim was extracted.
+ *
+ * Deliberately fails toward "modified". A highlight with no recorded version
+ * predates provenance tracking, and there is no way to know whether its source
+ * still says what it said — so the UI degrades to a visible "Source Modified"
+ * tag rather than asserting a freshness it cannot support. Silently showing it
+ * as current is the failure this exists to prevent: the clinician follows the
+ * link, reads different text, and concludes the highlight was wrong.
+ */
+export function isSourceModified(
+  highlight: Pick<Highlight, 'source_note_version'>,
+  currentNoteVersion: number | null | undefined
+): boolean {
+  if (highlight.source_note_version == null) return true;
+  if (currentNoteVersion == null) return true;
+  return highlight.source_note_version !== currentNoteVersion;
 }
 
 export type ConfidenceBand = 'high' | 'medium' | 'low';

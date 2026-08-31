@@ -15,6 +15,8 @@ interface TimelineViewProps {
   userRole: UserRole;
   onAddComment: (entryId: string) => void;
   onNavigateToSource: (entryId: string) => void;
+  /** Withdraw a sent patient message. Undefined hides the control. */
+  onRetract?: (entryId: string) => void;
   commentingEntryId: string | null;
   currentUser: Profile | null;
   onSubmitComment: (entryId: string, content: string, parentId?: string, mentions?: string[]) => void;
@@ -28,6 +30,7 @@ export function TimelineView({
   userRole,
   onAddComment,
   onNavigateToSource,
+  onRetract,
   commentingEntryId,
   currentUser,
   onSubmitComment,
@@ -167,6 +170,14 @@ export function TimelineView({
                 userRole={userRole}
                 onAddComment={onAddComment}
                 onNavigateToSource={onNavigateToSource}
+                // Only outgoing messages that actually reached the patient can
+                // be withdrawn. An internal note has no recipient to correct.
+                onRetract={
+                  onRetract && entry.visibility === 'patient_visible' &&
+                  entry.metadata?.direction === 'outgoing'
+                    ? onRetract
+                    : undefined
+                }
                 showCommentInput={commentingEntryId === entry.id}
                 currentUser={currentUser}
                 onSubmitComment={onSubmitComment}

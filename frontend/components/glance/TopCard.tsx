@@ -45,6 +45,8 @@ interface TopCardProps {
   loadingAction?: string | null;
   onToggleCarePlanItem?: (index: number) => void;
   conflictCount?: number;
+  /** Current care_notes.version, for detecting stale highlight sources. */
+  currentNoteVersion?: number | null;
   onReviewConflicts?: () => void;
   /** Raises the chip to critical styling when an allergy conflict is present. */
   hasCriticalConflict?: boolean;
@@ -71,6 +73,7 @@ const changeColors: Record<string, string> = {
 };
 
 export function TopCard({
+  currentNoteVersion,
   glanceCache,
   highlights,
   changesSinceLastVisit,
@@ -154,7 +157,11 @@ export function TopCard({
       {/* Critical flags and open actions, above the highlight list: the brief
           asks for both to be readable at a glance, and an unresolved action
           outranks an observation. */}
-      <CriticalFlags highlights={highlights} onFlagClick={onHighlightClick} />
+      <CriticalFlags
+        highlights={highlights}
+        onFlagClick={onHighlightClick}
+        currentNoteVersion={currentNoteVersion}
+      />
 
       {onAssignAction && onCompleteAction && onDeferAction && (
         <div className="mb-3">

@@ -43,7 +43,7 @@ export default async function PatientCareNotePage({
   // yjs_state bytea column — which can be large — off this path entirely.
   const { data, error } = await supabase
     .from('care_notes')
-    .select('id, patient_id, clinic_id, glance_cache, glance_cache_updated_at, created_at, updated_at')
+    .select('id, patient_id, clinic_id, glance_cache, glance_cache_updated_at, version, created_at, updated_at')
     .eq('patient_id', patientId)
     .maybeSingle();
 

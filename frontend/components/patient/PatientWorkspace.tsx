@@ -760,6 +760,59 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     }
   }, [careNote, entries, currentUser]);
 
+
+  /**
+   * Withdraw a message already sent to the patient.
+   *
+   * A gate on sending is only half of maker-checker; the other half is what
+   * happens when something wrong gets through anyway. Without this the honest
+   * answer was "nothing", which makes the approval step carry weight it cannot
+   * support.
+   *
+   * The reason is required and shown to the patient verbatim, so it is prompted
+   * for rather than defaulted — a generic "withdrawn" alarms without informing.
+   */
+  const handleRetractMessage = useCallback(async (entryId: string) => {
+    if (!careNote || !currentUser) return;
+
+    const reason = window.prompt(
+      'Why is this message being withdrawn?\n\n' +
+      'The patient sees this text, so write it for them — e.g. "The dose in the ' +
+      'previous message was incorrect."'
+    );
+    if (reason === null) return;
+    if (reason.trim().length < 10) {
+      toast.error('Give the patient a reason of at least 10 characters.');
+      return;
+    }
+
+    try {
+      await callAI<{ retracted_entry_id: string; notice_entry_id: string }>(
+        '/api/ai/retract-patient-message',
+        { care_note_id: careNote.id, entry_id: entryId, reason: reason.trim() },
+        token,
+      );
+
+      // Re-read through the user's own session so the timeline shows exactly
+      // what RLS will show on reload — both the struck-through original and the
+      // new retraction notice — rather than a locally patched guess.
+      const { data: refreshed } = await supabase
+        .from('timeline_entries')
+        .select('*, author:profiles!timeline_entries_author_profile_fkey(*)')
+        .eq('care_note_id', careNote.id)
+        .order('created_at', { ascending: false });
+      if (refreshed) setEntries(refreshed as TimelineEntry[]);
+
+      toast.success('Message withdrawn. The patient has been notified.');
+    } catch (err) {
+      toast.error(
+        err instanceof AIServiceError && err.kind === 'timeout'
+          ? 'Timed out. Reload to check whether the withdrawal went through before retrying.'
+          : 'Could not withdraw the message.'
+      );
+    }
+  }, [careNote, currentUser, supabase, token]);
+
   /**
    * Send a patient-facing message — through the maker-checker gate, never around it.
    *
@@ -1265,6 +1318,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onReviewConflicts={handleReviewConflicts}
           />
           <TopCard
+            currentNoteVersion={careNote.version}
             glanceCache={careNote.glance_cache}
             highlights={highlights}
             changesSinceLastVisit={careNote.glance_cache.changes_since_last_visit || []}
@@ -1553,6 +1607,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onReviewConflicts={handleReviewConflicts}
           />
           <TopCard
+            currentNoteVersion={careNote.version}
             glanceCache={careNote.glance_cache}
             highlights={highlights}
             changesSinceLastVisit={careNote.glance_cache.changes_since_last_visit || []}
@@ -1708,6 +1763,13 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             userRole={activeRole}
             onAddComment={handleAddComment}
             onNavigateToSource={handleNavigateToSource}
+            // Withdrawal is a clinician speech act, matching who may approve a
+            // send. Staff cannot retract advice they were not permitted to issue.
+            onRetract={
+              currentUser?.role === 'clinician' || currentUser?.role === 'admin'
+                ? handleRetractMessage
+                : undefined
+            }
             commentingEntryId={commentingEntryId}
             currentUser={currentUser}
             onSubmitComment={handleSubmitComment}

@@ -2,15 +2,20 @@
 
 import React from 'react';
 import { Badge } from '@/components/ui/badge';
-import type { Highlight } from '@/lib/types';
-import { AlertTriangle } from 'lucide-react';
+import { isSourceModified, type Highlight } from '@/lib/types';
+import { AlertTriangle, FileWarning } from 'lucide-react';
 
 interface CriticalFlagsProps {
   highlights: Highlight[];
   onFlagClick: (highlightId: string, sourceEntryId: string | null) => void;
+  /**
+   * Current `care_notes.version`, compared against each highlight's recorded
+   * version to detect that the source text moved after extraction.
+   */
+  currentNoteVersion?: number | null;
 }
 
-export function CriticalFlags({ highlights, onFlagClick }: CriticalFlagsProps) {
+export function CriticalFlags({ highlights, onFlagClick, currentNoteVersion }: CriticalFlagsProps) {
   const criticalFlags = highlights.filter((h) => h.risk_level === 'critical' && h.is_accepted !== false);
 
   if (criticalFlags.length === 0) return null;
@@ -42,6 +47,23 @@ export function CriticalFlags({ highlights, onFlagClick }: CriticalFlagsProps) {
             <div>
               <p className="text-sm font-medium text-red-800">{flag.content_snippet}</p>
               <p className="text-xs text-red-600/80 mt-0.5">{flag.risk_reason}</p>
+              {/* The source moved after this claim was extracted. Shown rather than
+                                hidden: the silent version — following the link and reading
+                                different text — leads a clinician to conclude the flag was
+                                wrong, or that the new text supports it. */}
+              {isSourceModified(flag, currentNoteVersion) && (
+                              <p
+                                className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+                                title={
+                                  flag.source_note_version == null
+                                    ? 'This highlight predates provenance tracking, so the source cannot be confirmed unchanged.'
+                                    : `Extracted from version ${flag.source_note_version}; the note is now at ${currentNoteVersion}.`
+                                }
+                              >
+                                <FileWarning className="w-2.5 h-2.5" />
+                                Source Modified
+                              </p>
+                            )}
             </div>
           </div>
         </div>

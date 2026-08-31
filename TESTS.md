@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**328 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**349 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -31,10 +31,11 @@ transcript. A grader clones the repo and the suite passes.
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
 | [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
 | [`test_rbac_scope`](#9-rbac--22) | 22 | Role and tenant isolation at the database |
-| [`test_self_learning_importance`](#10-self-learning--11) | 11 | Learning moves scores, within a clinic only |
+| [`test_self_learning_importance`](#10-self-learning--15) | 15 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
 | [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
+| [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
 
 ---
 
@@ -349,7 +350,7 @@ other five green.
 
 ---
 
-## 10. Self-learning — 11
+## 10. Self-learning — 15
 
 `tests/test_self_learning_importance.py` · database
 
@@ -427,6 +428,42 @@ patient-visible row at all and the gate cannot be skipped by not calling it.
 Checked by mutation: ignoring the gate verdict in the router fails 6 of these,
 including the source-supply test. Removing the RLS clause fails the two bypass
 tests in §9.
+
+
+---
+
+## 14. Delivery, retraction and provenance — 17
+
+`ai-service/tests/test_delivery_and_retraction.py` · endpoint, Supabase stubbed
+
+The three items that were schema-without-behaviour in the first resilience
+assessment. Each of these tests exists because the corresponding gap was real.
+
+**Delivery (Audit 9).** `sent` is asserted *not* to mean receipt — provider
+acceptance is our side of the handoff, the same category of claim as "we
+generated a link", and rendering it as delivered is the comfortable lie the whole
+module exists to prevent. Status transitions are monotonic, so a duplicate `sent`
+arriving after `delivered` writes nothing (providers do not guarantee callback
+order, and a regressed status sends staff chasing a patient who already has the
+message) while a late `failed` still applies. Malformed numbers are rejected
+before dispatch. The webhook is HMAC-signed and **fails closed** without a
+secret: it is the one unauthenticated write path into delivery state, and a
+green tick anyone can forge is worse than no tracking at all. An unknown message
+id returns 200, not 404, because providers retry non-2xx forever.
+
+**Retraction (Audit 12).** The update is asserted to carry `is_retracted` and
+**not** `content_text` — the original is marked, never rewritten, because the
+patient already read it and an auditor must be able to see what was sent. A
+separate patient-visible notice is posted, since a flag on the old message only
+reaches someone who re-reads it. Staff are refused; withdrawal matches who may
+approve a send.
+
+**Provenance (Audit 16).** Whitespace and case changes hash identically —
+otherwise "Source Modified" fires on every reflow and clinicians learn to ignore
+it — while `10mg` vs `1.0mg`, and `eGFR 45` vs `eGFR 54`, do not.
+
+Checked by mutation: making `sent` count as receipt, or allowing status
+regression, each fails a test.
 
 ---
 

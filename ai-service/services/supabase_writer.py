@@ -62,7 +62,7 @@ def resolve_care_note(care_note_id: str, *, caller_clinic_id: str) -> dict[str, 
     client = get_service_client()
     resp = (
         client.table("care_notes")
-        .select("id, clinic_id, patient_id")
+        .select("id, clinic_id, patient_id, version")
         .eq("id", care_note_id)
         .limit(1)
         .execute()
@@ -224,3 +224,78 @@ def insert_patient_visible_entry(
     if not resp.data:
         raise RuntimeError("Patient message insert returned no row")
     return resp.data[0]
+
+
+def retract_patient_message(
+    *,
+    entry_id: str,
+    care_note_id: str,
+    retracted_by: str,
+    retracted_by_role: str,
+    reason: str,
+) -> dict[str, Any]:
+    """
+    Mark a sent patient message retracted and post the retraction to the timeline.
+
+    Two writes, and both matter.
+
+    The original entry is **marked, never deleted or edited**. The patient has
+    already read it; a message that silently disappears is worse than one marked
+    withdrawn, because the patient remembers being told something and now cannot
+    find it — and an auditor cannot reconstruct what was sent. `is_retracted`
+    keeps the original text intact and visible with its status changed.
+
+    The retraction itself is then a **new patient-visible entry**. A flag on the
+    old message only helps someone who goes back and re-reads it, which is
+    exactly what a patient who acted on it will not do. The correction has to
+    arrive as its own event on their timeline.
+
+    Written with the service-role key because `visibility = 'patient_visible'`
+    is closed to user JWTs by the INSERT policies — the same gate that makes the
+    maker-checker firewall enforceable. Clinic and role were checked by the
+    caller before this runs.
+    """
+    client = get_service_client()
+
+    updated = (
+        client.table("timeline_entries")
+        .update({
+            "is_retracted": True,
+            "retracted_at": "now()",
+            "retracted_by": retracted_by,
+            "retraction_reason": reason,
+        })
+        .eq("id", entry_id)
+        .eq("care_note_id", care_note_id)
+        # Only an entry that is not already retracted. Re-retracting would post
+        # a second correction for a message the patient has already been told
+        # about, which reads as a new problem.
+        .eq("is_retracted", False)
+        .execute()
+    )
+    if not updated.data:
+        raise AccessDenied(
+            "That message is not available to retract - it may already have been "
+            "retracted, or it belongs to a different care note."
+        )
+
+    notice = (
+        "A message sent to you earlier has been withdrawn by your care team.\n\n"
+        f"Reason: {reason}\n\n"
+        "Please disregard the withdrawn message. If you have already acted on it, "
+        "contact the clinic."
+    )
+
+    entry = insert_patient_visible_entry(
+        care_note_id=care_note_id,
+        author_id=retracted_by,
+        author_role=retracted_by_role,
+        content_text=notice,
+        entry_type="instruction",
+        metadata={
+            "direction": "outgoing",
+            "kind": "retraction",
+            "retracts_entry_id": entry_id,
+        },
+    )
+    return {"retracted_entry_id": entry_id, "notice_entry_id": entry["id"]}

@@ -4,7 +4,7 @@ Sixteen failure modes a real clinic produces, and what this system actually does
 when it meets them. Written against the code as it stands on `master`, verified
 by running it rather than by reading it.
 
-**Verification basis:** 332 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
+**Verification basis:** 349 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
 `tsc --noEmit` clean on both TypeScript projects; `next build` compiles; all three
 migrations applied to a throwaway PostgreSQL cluster built from
 `supabase/migrations/001_foundation.sql`, then re-applied to confirm idempotency.
@@ -199,45 +199,67 @@ not a rounding of eleven successes.
 
 ### 9. Delivery Failure Tracing for Appointment Links
 
-- **Status:** DOES NOT
-- **Where:** `supabase/migrations/20260901_phone_identity_and_delivery.sql:95-150`
-  creates `message_deliveries` with a `status` enum deliberately starting at
-  `queued` (never `sent`), `failure_reason`, per-channel `destination`, and a
-  partial index on unresolved rows. **Nothing writes to it.** `services/messaging.ts`
-  does not exist; there is no SMS/WhatsApp provider integration, no webhook
-  handler, and no delivery UI anywhere in the codebase.
-- **What Breaks First:** The clinical assumption the audit names, entirely
-  unmitigated. Staff send a patient a link, the UI says it sent, and the patient
-  never receives it — wrong number, handset off, provider drop — and **nothing
-  in this system can tell the difference between "delivered" and "generated"**.
-  The table encodes the right model (our side of the handoff proves nothing about
-  receipt; only a provider webhook advances status, which is why no user role has
-  INSERT/UPDATE on it) but a schema catches no failures. This is the weakest item
-  in the audit and is stated as DOES NOT rather than PARTIAL because no delivery
-  is traced at all.
+- **Status:** PARTIAL *(was DOES NOT)*
+- **Where:** `ai-service/services/messaging.py` — `queue_delivery()`,
+  `apply_provider_status()`, `unresolved_for_clinic()`, `DeliveryRecord.confirmed_received`.
+  Webhook and staff view: `ai-service/routers/messaging.py` —
+  `POST /api/messaging/delivery-webhook`, `GET /api/messaging/unresolved`.
+  Producer: `ai-service/routers/patient_message.py` records an attempt after a
+  gate-approved send. Schema:
+  `supabase/migrations/20260901_phone_identity_and_delivery.sql:95-150`.
+- **What it now does.** `sent` and `delivered` are separate facts and only a
+  signed provider webhook can advance past `queued` — there is no code path that
+  sets `delivered` from inside this service. `confirmed_received` returns **false**
+  for `sent`, because provider acceptance is our side of the handoff, the same
+  category of claim as "we generated a link". Status transitions are monotonic,
+  so a duplicate `sent` arriving after `delivered` is ignored (providers do not
+  guarantee callback order, and a regressed status sends staff chasing a patient
+  who already has the message) while a late `failed` still wins, because it is
+  the truth and the earlier optimism is not. Malformed numbers are rejected
+  before dispatch, since a bad number is the commonest cause of silent
+  non-delivery and the carrier's rejection arrives asynchronously if at all.
+  The webhook is HMAC-signed and **fails closed** with no secret configured — it
+  is the one unauthenticated write path into delivery state, and a green tick
+  anyone can forge is worse than no tracking.
+- **What Breaks First:** No provider is wired. `_dispatch()` raises
+  `NotImplementedError` and `provider_configured()` is false, so every delivery
+  stays `queued` and renders as *not confirmed delivered* — honest, but no
+  patient is actually contacted by SMS or WhatsApp. This is mock-first by the
+  same reasoning as transcription: inventing a provider would manufacture the
+  false confidence the module exists to prevent. It is PARTIAL rather than
+  SURVIVES because the tracing is real and the sending is not. Wiring a provider
+  is implementing `_dispatch` and pointing its webhook at the endpoint; nothing
+  else changes. Verified by mutation — making `sent` count as receipt, or
+  allowing status regression, each fails a test.
 
 ### 10. Maker-Checker Human Gate & Correction Loop
 
-- **Status:** PARTIAL
-- **Where:** Gate: `ai-service/services/safety/patient_gate.py`; endpoint
+- **Status:** SURVIVES *(was PARTIAL)*
+- **Where:** Gate: `ai-service/services/safety/patient_gate.py`;
   `POST /api/ai/send-patient-message` at `ai-service/routers/patient_message.py:195`;
-  DB enforcement `AND visibility = 'internal'` on both care-team INSERT policies
-  in `supabase/migrations/001_foundation.sql`. UI: `frontend/components/patient/PatientWorkspace.tsx` `handleSendPatientMessage`
-  and the blocked-state chips. Retraction columns: `is_retracted`, `retracted_at`,
-  `retracted_by`, `retraction_reason` at
-  `supabase/migrations/20260901_phone_identity_and_delivery.sql:152-156`.
-- **What Breaks First:** Retraction — it does not exist above the schema.
-  `grep -rn is_retracted frontend` returns **nothing**: no retract control, no
-  timeline treatment, no patient-facing retraction event. A clinician who sends a
-  wrong message has no way to withdraw it.
-  The approval half **is** enforced and tested (12 assertions in
-  `ai-service/tests/test_patient_message_gate.py`, plus 4 DB-level bypass tests). Three
-  properties make it real rather than decorative: the *edited* text is screened
-  at the moment of Send; grounding sources are read **server-side** so a
-  fabricated dose cannot be sent as its own grounding; and the write happens only
-  on the passing branch of the same call, so a clinician's own token in curl
-  cannot create a patient-visible row. Checked by mutation — ignoring the
-  verdict fails 6 tests, removing the RLS clause fails 2.
+  DB enforcement `AND visibility = 'internal'` on both care-team INSERT policies in
+  `supabase/migrations/001_foundation.sql`.
+  Retraction: `POST /api/ai/retract-patient-message`;
+  `retract_patient_message()` in `ai-service/services/supabase_writer.py`;
+  UI in `frontend/components/timeline/TimelineEntry.tsx` (Withdraw control,
+  struck-through body, "Withdrawn by the care team" banner) and
+  `handleRetractMessage` in `frontend/components/patient/PatientWorkspace.tsx`.
+- **What retraction does.** The original entry is **marked, never deleted or
+  edited** — the patient already read it, and a message that silently disappears
+  is worse than one shown as withdrawn: they remember being told something and
+  can no longer find it, and an auditor cannot reconstruct what was sent. The
+  retraction is then posted as a **new patient-visible entry**, because a flag on
+  the old message only reaches someone who goes back and re-reads it, which is
+  exactly what a patient who already acted on it will not do. Restricted to
+  clinician/admin, matching who may approve a send. The reason has a minimum
+  length and is shown to the patient verbatim; a one-word reason alarms without
+  informing.
+- **What Breaks First:** The patient's attention, not the record. A withdrawal
+  notice competes with the original message in the same timeline, and nothing
+  here forces them to read it — the system can correct the record and notify,
+  but cannot confirm the correction landed. That confirmation depends on item 9,
+  which is why the two are coupled: with no provider wired, a retraction notice
+  is portal-only for a patient who may never log in.
 
 ### 11. Conflict Engine for Nurse vs. Patient Timeline Entries
 
@@ -305,23 +327,31 @@ not a rounding of eleven successes.
 
 ### 14. Addressable Highlight Provenance
 
-- **Status:** PARTIAL
-- **Where:** `supabase/migrations/20260901_care_notes_version.sql:80-110` adds
-  `highlights.source_note_version` and `exact_quote_hash`, plus
-  `highlight_source_changed()` which derives staleness on read rather than
-  storing a flag. `source_entry_id` and `provenance_pointer` already existed in
-  `supabase/migrations/001_foundation.sql`.
-- **What Breaks First:** The columns are never populated.
-  `grep -rn exact_quote_hash ai-service` returns **nothing** — the extraction
-  pipeline does not compute the hash or record the version, so
-  `source_note_version` is `NULL` on every existing and newly created highlight.
-  `highlight_source_changed()` deliberately reports `NULL` as *changed*, so the
-  system degrades to showing "Source Modified" rather than asserting a freshness
-  it cannot support — but that means it would currently mark **everything**
-  stale, and no UI reads it yet. So the mechanism is designed and the storage
-  exists; the behaviour does not. Click-through to the source entry works today
-  and lands on current text with no staleness signal, which is the silent failure
-  the audit describes.
+- **Status:** PARTIAL *(was PARTIAL — different gap)*
+- **Where:** `ai-service/services/provenance.py` — `normalise_quote()`,
+  `quote_hash()`. Populated at insert in `ai-service/routers/scribe.py:117`
+  (`note_version`) and `:293-294` (`source_note_version`, `exact_quote_hash`).
+  Schema and `highlight_source_changed()`:
+  `supabase/migrations/20260901_care_notes_version.sql:80-110`.
+  UI: `isSourceModified()` in `frontend/lib/types/index.ts:175`, rendered as a
+  "Source Modified" tag in `frontend/components/glance/CriticalFlags.tsx`, with
+  `currentNoteVersion` threaded from the SSR query through `TopCard`.
+- **What it now does.** The hash covers the **quote**, not the whole entry.
+  Hashing the entry would invalidate every highlight derived from it whenever any
+  unrelated sentence changed, and that noise makes the signal worthless.
+  Normalisation folds whitespace and case only — a clinician reflowing a
+  paragraph has not changed what the note says, while `10mg` and `1.0mg` hash
+  differently. `isSourceModified` fails toward **modified**: a null recorded
+  version means the highlight predates tracking and freshness cannot be asserted,
+  so the UI degrades to a visible tag rather than a silent claim of currency.
+- **What Breaks First:** Coverage of the write path. Only the scribe route
+  populates these fields; highlights created through other paths still store
+  `NULL`, and every pre-existing highlight will render "Source Modified" until
+  re-extracted. That is the intended failure direction — over-warning rather than
+  falsely reassuring — but on a seeded database it means the tag appears on
+  everything, which erodes the signal it is meant to carry. `exact_quote_hash` is
+  stored but not yet **compared** at read time; staleness is currently detected by
+  version alone, so an edit that leaves the version untouched would not be caught.
 
 ### 15. (see item 13 — Unbiased Ranking Loop Safeguards)
 
@@ -346,21 +376,38 @@ As above.
 | 6 | Timeout guardrails | **SURVIVES** |
 | 7 | 503 outage fallback | PARTIAL — one trigger surface of four |
 | 8 | Note concurrency (OCC) | **SURVIVES** |
-| 9 | Delivery tracing | **DOES NOT** |
-| 10 | Maker-checker + retraction | PARTIAL — retraction absent |
+| 9 | Delivery tracing | PARTIAL — traced honestly, no provider wired |
+| 10 | Maker-checker + retraction | **SURVIVES** |
 | 11 | Conflict engine precedence | PARTIAL — detects, does not rank |
 | 12 | Confidence metrics | **SURVIVES** |
 | 13 | Ranking safety floor | **SURVIVES** |
-| 14 | Highlight provenance | PARTIAL — columns never populated |
+| 14 | Highlight provenance | PARTIAL — populated on the scribe path only |
 
-**If this went live tomorrow, the first thing to break is item 9.** Every other
-gap degrades visibly — an unpopulated provenance column shows "Source Modified",
-an unranked contradiction still shows both sides, a missing offline trigger still
-leaves the record readable. Delivery is the only one that fails *silently and
-confidently*: staff see "sent", the patient received nothing, and no part of this
-system can tell those apart. Item 1 compounds it, because the patient most likely
-to be unreachable is the one with no email who was registered under an invented
-address.
+**If this went live tomorrow, the first thing to break is still item 9 — but for
+a different reason than before.** Delivery is now traced honestly rather than not
+at all: `sent` never renders as received, out-of-order webhooks cannot regress a
+status, and a bad number is rejected before dispatch. What is missing is the
+provider itself, so every delivery sits at `queued` and no patient is contacted
+outside the portal. That is a visible failure rather than a silent one, which is
+the improvement; it is still a patient not getting their appointment details.
 
-The three items I would fix before a clinic used this, in order: delivery
-tracing (9), retraction (10), then populating highlight provenance (14).
+Item 1 compounds it exactly as before: the patient least likely to open a portal
+is the one with no email, registered under an invented address, and unreachable
+by SMS because no provider is wired.
+
+The three items I would fix before a clinic used this, in order: wire a real
+messaging provider (9), then phone-based access so the portal is reachable at all
+(1), then compare `exact_quote_hash` at read time so provenance catches edits that
+leave the version untouched (14).
+
+## Changelog
+
+**First pass** — six SURVIVES, seven PARTIAL, one DOES NOT.
+
+**Second pass** — items 9, 10 and 14 were the three gaps flagged as "schema
+without behaviour". All three now have behaviour: delivery tracing with a signed
+webhook and monotonic status, retraction end-to-end from a Withdraw control to a
+patient-visible notice, and populated highlight provenance with a "Source
+Modified" tag. Item 10 moves to SURVIVES; 9 and 14 remain PARTIAL with the
+remaining gap named in each. 349 tests pass; delivery semantics and retraction
+were checked by mutation rather than assumed.

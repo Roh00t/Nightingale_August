@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { InlineComment } from '@/components/editor/InlineComment';
 import { getRoleColor, getTrustBadge, getRelativeTime, getFreshnessAge } from '@/lib/utils';
 import type { TimelineEntry as TimelineEntryType, Comment, UserRole, Profile } from '@/lib/types';
-import { MessageSquare, ExternalLink, Bot, AlertTriangle, FlaskConical } from 'lucide-react';
+import { MessageSquare, ExternalLink, Bot, AlertTriangle, FlaskConical , Undo2 } from 'lucide-react';
 
 interface TimelineEntryProps {
   entry: TimelineEntryType;
@@ -29,6 +29,11 @@ interface TimelineEntryProps {
   onSubmitComment?: (entryId: string, content: string, parentId?: string, mentions?: string[]) => void;
   onResolveComment?: (commentId: string) => void;
   clinicMembers?: Profile[];
+  /**
+   * Withdraw a message already sent to the patient. Supplied only for
+   * clinician/admin on an outgoing, not-yet-retracted entry.
+   */
+  onRetract?: (entryId: string) => void;
 }
 
 export function TimelineEntry({
@@ -44,6 +49,7 @@ export function TimelineEntry({
   onSubmitComment,
   onResolveComment,
   clinicMembers = [],
+  onRetract,
 }: TimelineEntryProps) {
   const trustBadge = getTrustBadge(entry.author_role, entry.entry_type);
   const freshnessAge = getFreshnessAge(entry.created_at);
@@ -164,12 +170,26 @@ export function TimelineEntry({
             </div>
           ) : null}
 
+          {/* Withdrawn state, above the content rather than replacing it: the
+              patient and any auditor need to see WHAT was withdrawn, not just
+              that something was. */}
+          {entry.is_retracted && (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5">
+              <p className="text-xs font-semibold text-amber-700">Withdrawn by the care team</p>
+              {entry.retraction_reason && (
+                <p className="text-[11px] text-muted-foreground mt-0.5">{entry.retraction_reason}</p>
+              )}
+            </div>
+          )}
+
           {/* Content */}
           <div className="text-sm leading-relaxed">
             {isLabResult ? (
               <LabResultsDisplay content={entry.content as unknown as LabResultContent} metadata={entry.metadata} />
             ) : entry.content_text ? (
-              <p><SpanHighlightedText text={entry.content_text} span={isHighlighted ? highlightedSpan : null} /></p>
+              <p className={entry.is_retracted ? 'line-through opacity-60' : undefined}>
+                <SpanHighlightedText text={entry.content_text} span={isHighlighted ? highlightedSpan : null} />
+              </p>
             ) : (
               <p className="italic text-muted-foreground">No text content</p>
             )}
@@ -211,6 +231,21 @@ export function TimelineEntry({
               >
                 <MessageSquare className="w-3 h-3" />
                 {comments.length > 0 ? comments.length : 'Comment'}
+              </Button>
+            )}
+
+            {/* Withdraw. Offered only on a message that actually reached the
+                patient and has not already been withdrawn — the parent decides
+                the role, so this stays a presentational check. */}
+            {onRetract && !entry.is_retracted && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs gap-1.5 text-amber-700 hover:text-amber-800"
+                onClick={() => onRetract(entry.id)}
+              >
+                <Undo2 className="w-3 h-3" />
+                Withdraw
               </Button>
             )}
           </div>

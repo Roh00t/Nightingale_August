@@ -20,12 +20,15 @@ from services.auth import CallerIdentity, require_caller, require_roles
 
 from services.llm import generate_patient_summary
 from services.redaction import cleanup_redaction_map, de_redact, redact
+from services.messaging import queue_delivery
 from services.safety.patient_gate import finalize_patient_message
 from services.supabase_writer import (
     AccessDenied,
     SupabaseUnavailable,
     fetch_grounding_sources,
+    get_profile,
     insert_patient_visible_entry,
+    retract_patient_message,
     resolve_care_note,
 )
 
@@ -269,6 +272,36 @@ async def send_patient_message(
     except SupabaseUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    # Record the delivery attempt (Audit 11). Writing the timeline entry means
+    # the message exists in the record; it says nothing about the patient having
+    # received it. Those are separate facts and are now stored separately.
+    #
+    # Failure here must not fail the send: the entry is already written and the
+    # patient can read it in the portal. Losing the delivery trace is a
+    # degradation of visibility, not of care, so it is logged and swallowed.
+    try:
+        patient = get_profile(care_note["patient_id"])
+        phone = (patient or {}).get("phone_e164")
+        if phone:
+            queue_delivery(
+                clinic_id=caller.clinic_id,
+                profile_id=care_note["patient_id"],
+                channel="whatsapp",
+                destination=phone,
+                care_note_id=care_note["id"],
+                entry_id=entry["id"],
+                body=message,
+            )
+        else:
+            # No reachable number. Worth logging loudly: the message is in the
+            # portal, which a patient who cannot log in will never open.
+            logger.warning(
+                "No phone on file for patient %s - message %s is portal-only",
+                care_note["patient_id"], entry["id"],
+            )
+    except Exception:
+        logger.exception("Could not record delivery for entry %s", entry["id"])
+
     logger.info(
         "Patient message sent for care_note_id=%s by %s",
         request.care_note_id,
@@ -277,3 +310,78 @@ async def send_patient_message(
     return SendPatientMessageResponse(
         entry_id=entry["id"], message=message, verdict=result.verdict.value
     )
+
+
+# ---------------------------------------------------------------------------
+# Retraction — the correction half of maker-checker
+# ---------------------------------------------------------------------------
+
+
+class RetractPatientMessageRequest(BaseModel):
+    care_note_id: str
+    entry_id: str = Field(..., description="The sent patient message to withdraw")
+    reason: str = Field(
+        ...,
+        min_length=10,
+        description=(
+            "Why it is being withdrawn. Shown to the patient verbatim, so it has "
+            "to make sense to them."
+        ),
+    )
+
+
+class RetractPatientMessageResponse(BaseModel):
+    retracted_entry_id: str
+    notice_entry_id: str
+
+
+@router.post(
+    "/retract-patient-message",
+    response_model=RetractPatientMessageResponse,
+    summary="Withdraw a patient message and notify the patient",
+)
+async def retract_patient_message_endpoint(
+    request: RetractPatientMessageRequest,
+    caller: CallerIdentity = Depends(require_roles("clinician", "admin")),
+) -> RetractPatientMessageResponse:
+    """
+    Withdraw a message already sent to a patient.
+
+    A gate on sending is only half of maker-checker. The other half is what
+    happens when something wrong gets through anyway — and without a retraction
+    path the honest answer was "nothing", which makes the approval step carry
+    weight it cannot support.
+
+    Restricted to clinician and admin, matching who may approve a send. Staff
+    cannot withdraw clinical advice they were not permitted to issue.
+
+    The reason has a minimum length because it is shown to the patient verbatim.
+    A one-word reason produces a notice that alarms without informing.
+    """
+    try:
+        care_note = resolve_care_note(
+            request.care_note_id, caller_clinic_id=caller.clinic_id
+        )
+    except SupabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AccessDenied as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        result = retract_patient_message(
+            entry_id=request.entry_id,
+            care_note_id=care_note["id"],
+            retracted_by=caller.user_id,
+            retracted_by_role=caller.role,
+            reason=request.reason.strip(),
+        )
+    except AccessDenied as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SupabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    logger.info(
+        "Patient message %s retracted by %s on care_note %s",
+        request.entry_id, caller.role, request.care_note_id,
+    )
+    return RetractPatientMessageResponse(**result)

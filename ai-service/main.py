@@ -36,6 +36,7 @@ from fastapi.responses import JSONResponse
 from routers import (
     conflicts,
     highlights,
+    messaging,
     patient_message,
     redact,
     scribe,
@@ -199,6 +200,7 @@ app.include_router(patient_message.router)
 app.include_router(scribe.router)
 app.include_router(conflicts.router)
 app.include_router(transcribe.router)
+app.include_router(messaging.router)
 
 
 # ---------------------------------------------------------------------------
