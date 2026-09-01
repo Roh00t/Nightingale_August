@@ -8,7 +8,22 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**398 automated tests · Glance P95 79.7 ms · runs offline with no credentials.**
+**398 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+
+> **Compliance posture — read this before quoting the security sections.**
+> This is a prototype built on **synthetic data only**. The design is
+> HIPAA/PDPA-*informed* — PHI is redacted before it leaves the process, access is
+> enforced at the database rather than the UI, and audit records carry counts and
+> identifiers rather than clinical content. It is **not a compliance
+> attestation**. Handling real patient data would additionally require, at
+> minimum: BAAs or equivalent with Groq, ElevenLabs, Supabase and Railway;
+> defined audit-log retention and review; encryption-at-rest key custody; formal
+> access reviews; and a breach-notification process. None of that exists here,
+> and the code says so where it matters rather than implying otherwise.
+
+---
+
+## Live deployment
 
 ### **https://nightingale-august-frontend-6ktv.vercel.app**
 
@@ -17,68 +32,213 @@ password `demo-password-123`. Start as `clinician@nightingale.demo`, then open a
 second window as `patient@nightingale.demo` to see the same record from both
 sides.
 
-**What the deployment covers.** The Vercel build is the Next.js frontend against
-the live Supabase project, so everything backed by the database works there:
-sign-in, role-based access, the Glance View, the longitudinal timeline, threaded
-comments and `@mentions`, revision history with diff and revert, and patient
-isolation.
-
-**The AI service is deployed too.** FastAPI runs on Railway at
-`https://nightingaleaugust-3zme-production.up.railway.app`, so the AI features
-call a real service from the live host rather than a local one. The Hocuspocus
-collab server is **not** deployed — a WebSocket server holding long-lived
-connections does not fit Vercel's serverless model — so live cursors degrade to
-the "Local Only" fallback described below.
-
-| Feature | Live | Local |
+| Tier | Host | Notes |
 |---|---|---|
-| Sign-in, RBAC, patient isolation | ✅ | ✅ |
-| Glance View, timeline, comments, `@mentions` | ✅ | ✅ |
-| Revision history, diff, revert | ✅ | ✅ |
-| AI summaries and highlights | ✅ via Railway | ✅ |
-| Contradiction detection | ✅ via Railway | ✅ |
-| Ambient voice capture | ✅ via Railway | ✅ |
-| Multi-user co-editing, live cursors | ⚠️ "Local Only" | ✅ |
+| Frontend — Next.js 15 App Router | **Vercel** | `regions: ["sin1"]` |
+| Database — PostgreSQL, RLS on 11 tables | **Supabase** | managed; RLS is the enforcement point |
+| AI service — FastAPI | **Railway** | Nixpacks build, `uvicorn` via `Procfile` |
+| Collab — Hocuspocus / Yjs | **not deployed** | degrades to "Local Only"; see below |
 
-**"Local Only" is a designed fallback, not a failure.** The editor waits 5s for
-the collab server, then switches to `unavailable`: it loads `yjs_state` from
-Supabase and keeps writing edits straight back to `care_notes`. Work is saved and
-survives reload — what is lost is *live cursors and simultaneous co-editing*, and
-the amber badge says so rather than pretending to be connected.
-
-> **Check before demoing.** Every AI endpoint requires a verified JWT, so the
-> Railway service needs `SUPABASE_JWT_JWK` (or `SUPABASE_JWT_SECRET`) in its
-> environment. Without it the service is up but answers `503 Authentication is
-> not configured on this service` — it fails closed, which is correct, but the
-> AI features will be dead. Confirm with:
->
-> ```bash
-> curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
-> ```
->
-> `jwt_verification` must read `true`. `NEXT_PUBLIC_AI_SERVICE_URL` must also be
-> set on Vercel **at build time** — it is inlined into the client bundle, so
-> changing it requires a redeploy, not just an env edit.
-
-Follow [Quick start](#quick-start) for the full feature set, or
-[DEMO_RUNBOOK.md](DEMO_RUNBOOK.md) for the exact startup sequence.
+**Why the collab server is not deployed.** Hocuspocus holds a stateful WebSocket
+per editing session with the authoritative Y.Doc in memory. Serverless functions
+are short-lived and share no memory between invocations, so a CRDT authority
+cannot live there. Rather than fake it, the client detects the absent server,
+shows an amber **"Local Only"** badge, and falls back to reading and writing
+`yjs_state` directly against Supabase. Edits persist and survive reload; what is
+lost is live cursors and simultaneous co-editing.
 
 ---
 
-## What's in it
+## Core architecture
 
-| | |
+```
+Browser
+  │
+  ├── HTTPS ──→ Next.js 15 (App Router)          Vercel
+  │               Server Components · RSC · route handlers
+  │
+  ├── HTTPS ──→ Supabase                          managed
+  │               Auth (GoTrue, ES256) · PostgreSQL · RLS · Realtime
+  │
+  ├── HTTPS ──→ FastAPI                           Railway
+  │               redaction → safety layer → Groq
+  │               ├── Microsoft Presidio + spaCy en_core_web_sm (English only)
+  │               ├── Groq  openai/gpt-oss-20b
+  │               ├── ElevenLabs Scribe v2 (metered, off by default)
+  │               └── python-multipart (audio ingestion)
+  │
+  └── WSS ────→ Hocuspocus                        local only
+                  Yjs CRDT · JWT + role gate
+```
+
+### CORS — production and preview origins
+
+The AI service is called directly from the browser, so it owns the CORS
+decision; **no Vercel setting affects it**. Configuration lives in
+`ai-service/main.py`.
+
+```python
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://nightingale-august-frontend-6ktv.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    ...
+]
+VERCEL_PREVIEW_ORIGIN_REGEX = (
+    r"https://nightingale-august-frontend-6ktv(-[a-z0-9-]+)?\.vercel\.app"
+)
+```
+
+Preview deployments get a generated hostname per branch, so they cannot be
+enumerated in advance and need a pattern. **That pattern is deliberately
+narrower than the obvious one.** `*.vercel.app` is a *shared* namespace — anyone
+with a Vercel account can claim a free subdomain — so
+`...6ktv.*\.vercel\.app` would grant CORS to whoever registers
+`nightingale-august-frontend-6ktvevil`, and because `.*` spans dots it would also
+admit `...6ktv.attacker.vercel.app`. Both were measured as matching the loose
+form. The shipped pattern requires a literal hyphen before any suffix, excludes
+dots from the suffix class, and escapes the dots in `.vercel.app`. Starlette
+applies it with `fullmatch`, which is what makes `...vercel.app.evil.com` fail.
+
+`allow_origins` is never `*`: combined with `allow_credentials=True` browsers
+reject it outright, and this service is called with an `Authorization` header.
+`CORS_ORIGINS` overrides the list and **replaces** rather than extends it, so the
+list can be narrowed.
+
+**A failed preflight does not look like a configuration problem.** Starlette
+answers an unlisted origin with `400` and *no* `Access-Control-Allow-Origin`
+header, so the browser reports a generic CORS failure and the request never
+leaves. Diagnose it directly:
+
+```bash
+curl -s -o /dev/null -D - -X OPTIONS \
+  https://nightingaleaugust-3zme-production.up.railway.app/api/ai/summarize \
+  -H "Origin: https://nightingale-august-frontend-6ktv.vercel.app" \
+  -H "Access-Control-Request-Method: POST" | grep -i access-control-allow-origin
+```
+
+---
+
+## Clinical security & data flow
+
+### PHI redaction — strictly ordered, and structurally enforced
+
+Redaction runs in `ai-service/services/redaction.py` **before any Groq call**,
+never after. The ordering used to be guaranteed only by code reading —
+`redact()` on one line, the model call twenty lines later — and code reading does
+not survive refactoring: a new endpoint or an added `patient_context=` argument
+reintroduces the leak with no test failing.
+
+So the guarantee is now structural. Every model call funnels through one
+chokepoint (`_call_with_retry`), and `services/egress_guard.py` re-derives the
+answer from the payload immediately before the network call:
+
+```
+redact()  →  safety layer  →  assert_safe_for_model(messages)  →  Groq
+                                        │
+                                        └─ raises UnredactedEgressError
+```
+
+It **refuses rather than repairs**. Silently fixing one leaked field would hide
+the call path that skipped redaction, and the next unredacted field would go out
+under a different shape. What it guarantees is narrow and worth stating exactly:
+**no NRIC/FIN or Singapore phone number reaches Groq, whatever the call path
+did.** Free-text names remain Presidio's job, upstream.
+
+**Detection layers**, in order:
+
+| Layer | Covers |
 |---|---|
-| **Glance View** | Server-rendered Top Card from a denormalised `glance_cache`. Measured **P95 79.7 ms** against a 300 ms budget. |
-| **Sunshine disclosure** | Open actions, critical flags, how much is AI-derived, measured confidence, abstentions, rule floors, provenance coverage — before any content. |
-| **Longitudinal timeline** | Time-ordered feed with `author_role`, `author_id`, `timestamp`, `type`, `provenance_pointer` on every entry. |
-| **Inline collaboration** | Threaded comments with resolve/unresolve, `@mentions`, and Assign / Done / Defer on open actions. |
-| **Revision history** | Full snapshots, version-to-version diff, one-click revert (additive — nothing is destroyed). |
-| **AI Scribe** | Three interaction types written as `author_role='system'`, `author_id=NULL`, with provenance back to the session. |
-| **Ambient voice capture** | Record a consult in the browser → diarized transcript → PHI stripped → structured summary. Mock-first; spends no credits by default. |
-| **Clinical safety layer** | Verbatim extraction, deterministic risk floors, measured confidence + abstention, contradiction detection, patient-facing firewall, feedback-loop guards. |
-| **RBAC** | PostgreSQL Row Level Security across 9 tables. UI adapts; the database enforces. |
-| **PHI redaction** | Presidio + spaCy + Singapore recognisers (NRIC/FIN incl. M series, SG phones, local name forms), strictly before any LLM call. |
+| spaCy `en_core_web_sm` via Presidio | general PERSON / LOCATION / ORG |
+| Custom SG `PatternRecognizer`s | NRIC/FIN incl. the 2022 **M** series, `+65` phones, MRN |
+| Local name conventions | `bin` / `binte` / `s/o` / `d/o` / `a/l` / `a/p`, CJK names, titled and labelled forms |
+
+Presidio is pinned to English recognizers only — `AnalyzerEngine(...,
+supported_languages=["en"])` — so no other language pipeline is constructed at
+startup. The full pattern table and entity coverage are in
+[Redaction reference](#redaction-reference--patterns-and-entity-coverage).
+
+**Logs are scrubbed independently.** `services/log_scrubbing.py` attaches a
+filter to the **root** logger at import time, before the app is constructed, so
+uvicorn access lines and third-party tracebacks are covered too — those are the
+records most likely to carry raw input, and a filter on the application logger
+alone would miss both. It is regex-only by design: model inference on the
+emitting thread would add latency to every record and can deadlock if the
+analyser itself logs.
+
+### The maker-checker firewall
+
+Patient-facing generation is the highest-severity path in the system and the only
+one where AI output cannot reach its audience unaccompanied.
+
+1. **Grounding (deterministic).** Every clinical token — drug names, doses,
+   numbers with units — must appear in the source record. Compared by **set
+   membership, not substring**: substring matching would treat `1` as grounded by
+   `10mg` and `10` as grounded by `100mg`, which is a dosing error passing in the
+   dangerous direction.
+2. **Prohibited speech acts (deterministic).** Diagnosis, prognosis,
+   stop-treatment, dose-change, emergency-deferral. These are clinician speech
+   acts; an assistant has no standing to make them.
+3. **Named human approval,** recorded and rendered as visible attribution.
+
+Three properties make this enforcement rather than decoration:
+
+- The **edited** text is screened at the moment of Send. The AI's draft may have
+  been grounded; what the patient reads is the clinician's edit of it.
+- Grounding sources are read **server-side** from the record. If the caller
+  supplied them, a fabricated dose could be sent as its own grounding and verify
+  against itself — the request model deliberately has no `sources` field.
+- The write happens only on the **passing branch of the same call**. Both
+  care-team INSERT policies carry `AND visibility = 'internal'`, so a clinician's
+  own token in curl can write internal notes and **cannot create a
+  patient-visible row at all**.
+
+Approval cannot rescue a blocked draft; the checks run first. A blocked draft
+returns `422` with the offending tokens, rendered as chips beside the draft.
+
+### Multi-tenant isolation
+
+RLS on all tables, with clinic scoping through `SECURITY DEFINER` helpers rather
+than a JWT claim. `get_user_clinic_id()` reads `profiles.clinic_id`, which is
+authoritative immediately — a JWT claim is a snapshot that keeps granting access
+to a clinic a user was removed from until their token expires.
+
+Defence in depth: every patient-scoped table also carries a denormalised
+`clinic_id`, filled and locked by trigger so a caller cannot forge it, and
+checked by a **RESTRICTIVE** policy. Restrictive matters — Postgres ORs
+permissive policies together, so a second permissive policy would have *widened*
+access.
+
+**RLS is row-level, not column-level.** That is not a footnote; it is the single
+most expensive lesson in this codebase. A patient-readable row exposes every
+column in it, so the clinical assessment lives in `care_note_assessments` (no
+patient policy at all) rather than in a field of the note. A trigger additionally
+strips `top_items` and `changes_since_last_visit` from `care_notes.glance_cache`
+on every write, because the display object that carries them for clinicians is
+also a write source, and stripping in application code has to be remembered at
+every call site.
+
+### API resilience
+
+| Guardrail | Value | Rationale |
+|---|---|---|
+| Groq per-attempt timeout | **20 s** | The SDK defaults to none; a stalled upstream held an async worker until the connection dropped elsewhere |
+| Browser `AbortController` | **25 s** | Sits *above* the server deadline so the server gives up first and the client renders a real timeout |
+| Voice upload | **120 s** | 25 s would abort work that was going to succeed, and a consult cannot be re-recorded |
+| Groq SDK retries | **0** | Retry lives in one place; otherwise attempts multiply and a rate-limited key hangs for minutes |
+
+All `/api/ai/*` endpoints are **POST-only** — other methods return `405`,
+verified — and every one requires a verified JWT and fails closed.
+
+**Optimistic concurrency on care notes.** `care_notes.version` plus
+`save_care_note_yjs()` compare-and-swap, applied **only on the fallback path**.
+With Hocuspocus connected, Yjs merges character-level operations and OCC would
+reject merges the CRDT resolves correctly. The window is when collab is *down*:
+the editor writes the whole document with a plain UPDATE, two clinicians both
+write, and the second silently erases the first. A refused save does **not**
+retry with the fresh version — that is precisely the clobber it exists to
+prevent. It stops, keeps the text on screen, and says the note was not written,
+because the dangerous property is that unsaved text looks saved.
 
 ---
 
@@ -199,16 +359,48 @@ the right posture — but check this field, not just the status string.
 `supabase/fix_live_grants.sql` once to an existing deployment; a fresh project
 gets everything from `supabase/migrations/001_foundation.sql`.
 
-> **Two env traps, both of which cost real debugging time:**
+> **Three env traps, each of which cost real debugging time:**
 >
 > **A blank value is worse than a missing one.** `os.getenv(key, default)`
 > returns `""` for `KEY=`, defeating every fallback. Comment the line out instead.
 >
-> **Never `source .env` before starting a service.** `SUPABASE_JWT_JWK` holds a
-> JSON document and the shell strips its quotes, exporting a corrupt value.
-> Because a real environment variable takes precedence over the `.env` file,
-> every AI endpoint then returns 503 with `SUPABASE_JWT_JWK is not valid JSON`.
-> Each service parses `.env` itself — just start it and let it.
+> **`SUPABASE_JWT_JWK` must be a single, valid, properly escaped JSON object.**
+> This is the highest-frequency deployment failure in this project. The variable
+> holds a JWK Set — `{"keys":[{"kty":"EC","alg":"ES256","kid":"...",...}]}` — and
+> anything that mangles it produces the same symptom: **every AI endpoint returns
+> `503 Authentication is not configured on this service`**, while `/health`
+> continues to answer `200` and `/ready` still reports `status: ready`.
+>
+> That combination is what makes it expensive. The service looks alive from every
+> angle a load balancer checks, so the failure presents as "the AI is broken"
+> rather than "one variable is malformed". Diagnose it by reading the *field*,
+> not the status line:
+>
+> ```bash
+> curl -s https://<your-railway-host>/ready
+> # {"status":"ready","checks":{...,"jwt_verification":false,...}}
+> #                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this one
+> ```
+>
+> `jwt_verification: false` means the value is absent or unparseable. The three
+> ways it gets mangled:
+>
+> | Cause | What happens |
+> |---|---|
+> | `source .env` before starting | The shell strips the outer quotes, exporting `{keys:[...]}`. A real env var beats the `.env` file, so the service reads the corrupt one. **Never source it** — each service parses `.env` itself. |
+> | Pasting into a dashboard field with newlines | Railway/Vercel preserve the newline; `json.loads` fails. Paste it as one line. |
+> | Double-escaping | `\"` inside an already-quoted dashboard value yields `\\"` in the process. Paste raw JSON, not a shell-escaped string. |
+>
+> Verify locally before deploying:
+>
+> ```bash
+> python3 -c "import json,os; json.loads(os.environ['SUPABASE_JWT_JWK']); print('valid')"
+> ```
+>
+> Fetch a fresh copy from `https://<project>.supabase.co/auth/v1/.well-known/jwks.json`.
+> `SUPABASE_JWT_SECRET` (symmetric HS256) is accepted as a fallback, but the
+> project publishes ES256 keys and Supabase is migrating off symmetric secrets —
+> prefer the JWK.
 
 ### 4. Database
 
@@ -363,7 +555,7 @@ a LAN IP does not, so `getUserMedia` will be refused over plain HTTP.
 
 ---
 
-## Where redaction happens
+## Redaction reference — patterns and entity coverage
 
 **`ai-service/services/redaction.py`**, strictly before any text reaches Groq.
 Every AI router follows the same order, with no path around it:
@@ -414,7 +606,7 @@ Redacted 5 entities (MRN:1, NRIC:1, PERSON:2, PHONE:1) from 119 chars
 
 **At the database, in `supabase/migrations/001_foundation.sql`.** PostgreSQL Row
 Level Security is the enforcement point; the UI adapts to role but is never the
-control. All nine tables have RLS enabled.
+control. All eleven tables have RLS enabled.
 
 **Grants** decide whether a role may touch a table at all; **policies** decide
 which rows it sees. `anon` receives schema usage only — every policy requires
@@ -567,7 +759,7 @@ grants and RLS state for every table in `public`, enumerated from `pg_class`:
 | care_note_assessments | true | true | true | true | 3 |
 | care_notes | true | true | true | true | 4 |
 | timeline_entries | true | true | true | true | 7 |
-| *…nine tables* | | | | | |
+| *…eleven tables* | | | | | |
 
 Enumerated rather than listed by hand on purpose: a fixed `IN (...)` list silently
 omits tables added later, and the omission renders identically to a pass — which
@@ -580,45 +772,100 @@ probe answers row visibility.
 
 ---
 
-## Architecture
-
-```
-Browser
-  │
-  ├── HTTPS ──→ Next.js 15 (App Router)          Vercel
-  │               └── Server Components, RSC, route handlers
-  │
-  ├── HTTPS ──→ Supabase                          managed
-  │               Auth · PostgreSQL · RLS on 9 tables · Realtime
-  │
-  ├── HTTPS ──→ FastAPI                           Railway
-  │               redaction → safety layer → Groq
-  │               ├── Microsoft Presidio + spaCy (en_core_web_sm)
-  │               ├── Groq  openai/gpt-oss-20b
-  │               ├── ElevenLabs Scribe v2 (metered, off by default)
-  │               └── python-multipart (audio ingestion)
-  │
-  └── WSS ────→ Hocuspocus                        local only
-                  Yjs CRDT sync, JWT + role gate
-                  └── absent in production → "Local Only" fallback
-```
+## Service map
 
 | Service | Path | Production | Local |
 |---|---|---|---|
 | Frontend | `frontend/` | Vercel — [nightingale-august-frontend-6ktv.vercel.app](https://nightingale-august-frontend-6ktv.vercel.app) | `npm run dev:frontend` :3000 |
-| Database | `supabase/` | Supabase managed Postgres, 9 RLS tables | same project |
+| Database | `supabase/` | Supabase managed Postgres | same project |
 | AI service | `ai-service/` | Railway — [nightingaleaugust-3zme-production.up.railway.app](https://nightingaleaugust-3zme-production.up.railway.app) | `.venv/bin/uvicorn main:app --reload --port 8000` |
 | Collab server | `collab-server/` | **not deployed** — degrades to "Local Only" | `npm run dev:collab` :1234 |
 
-**Why the collab server is not deployed.** Hocuspocus holds a stateful WebSocket
-per editing session and keeps the authoritative Y.Doc in memory. Vercel's
-serverless functions are short-lived and have no shared memory between
-invocations, so a CRDT authority cannot live there — it needs a long-running host
-with sticky sessions. Rather than fake it, the client detects the absent server
-and falls back to direct Supabase persistence with an honest badge.
-
 Full design rationale, failure modes and measured latency are in
 **[TECHNICAL_BRIEF.md](TECHNICAL_BRIEF.md)**.
+
+---
+
+## Deployment
+
+Three hosts, three build paths. Nothing here is inferred — each was verified
+against the running deployment.
+
+### Frontend — Vercel
+
+`vercel.json` at the repo root:
+
+```json
+{
+  "buildCommand": "cd frontend && npm run build",
+  "installCommand": "cd frontend && npm install",
+  "outputDirectory": "frontend/.next",
+  "framework": "nextjs",
+  "regions": ["sin1"]
+}
+```
+
+`sin1` (Singapore) because the Supabase project and the clinical users are both
+in-region; the Glance View's P95 budget is 300 ms and a trans-Pacific round trip
+spends most of it.
+
+**`NEXT_PUBLIC_*` is inlined into the client bundle at build time.** Editing one
+in the Vercel dashboard changes nothing until you redeploy — this catches people
+out with `NEXT_PUBLIC_AI_SERVICE_URL` in particular.
+
+### AI service — Railway
+
+Built with **Nixpacks**, not Docker. `ai-service/railway.json` sets the builder
+and start command; `ai-service/Procfile` carries `web: uvicorn main:app --host
+0.0.0.0 --port $PORT`.
+
+**The spaCy model is not a pip dependency.** `en_core_web_sm` is distributed as a
+wheel outside PyPI, so `pip install -r requirements.txt` does not bring it, and
+the redaction engine will not start without it. It must be installed during the
+**build**, not at runtime — a first-request download is a multi-second cold start
+on the PHI path, and a network failure there fails the request that most needs to
+succeed. Either add a build step:
+
+```bash
+python -m spacy download en_core_web_sm
+```
+
+or pin the wheel directly in `requirements.txt` so it installs with everything
+else:
+
+```
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+```
+
+The second is preferable — it makes the model a declared dependency rather than
+an out-of-band step someone can forget. Confirm either way from
+`/ready` → `redaction_engine: true`.
+
+**CORS lives here, not on Vercel.** A change to `allow_origins` requires a
+**Railway** redeploy; pushing the frontend has no effect on it.
+
+### Database — Supabase
+
+Apply `supabase/DEPLOY_20260901_all.sql` in the SQL Editor — four migrations in
+dependency order, verified to apply and re-apply cleanly against a throwaway
+cluster. Then confirm:
+
+```bash
+node scripts/verify_patient_isolation.mjs   # 9 assertions, all must pass
+```
+
+Full manual sequence, including Realtime replication and the per-host variable
+split, is in **[DEPLOY_CHECKLIST.md](DEPLOY_CHECKLIST.md)**.
+
+### Post-deploy verification
+
+```bash
+curl -s https://<railway-host>/ready
+```
+
+Read the individual checks, not `status`. The service reports `ready` when Groq
+and redaction are healthy, so `jwt_verification: false` passes the status line
+while breaking every authenticated endpoint.
 
 ---
 

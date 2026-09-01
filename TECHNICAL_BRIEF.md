@@ -10,12 +10,20 @@ we know if it were wrong, and what happens when it is.
 
 **398 automated tests, runnable offline with no credentials.**
 
+**Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
+— PHI redacted before egress, access enforced at the database, audit records
+carrying counts rather than content — and is **not a compliance attestation**.
+Real patient data would additionally require BAAs or equivalent with Groq,
+ElevenLabs, Supabase and Railway; defined audit-log retention and review;
+encryption-at-rest key custody; access reviews; and breach notification. None of
+that exists here.
+
 **Live deployment.** Three tiers, three hosts:
 
 | Tier | Host | URL |
 |---|---|---|
 | Frontend — Next.js 15 | Vercel | https://nightingale-august-frontend-6ktv.vercel.app |
-| Database — PostgreSQL, 9 RLS tables | Supabase | managed |
+| Database — PostgreSQL, 11 RLS tables | Supabase | managed |
 | AI service — FastAPI | Railway | https://nightingaleaugust-3zme-production.up.railway.app |
 
 The Hocuspocus collab server is the one tier that is **not** deployed. It holds a
@@ -52,7 +60,7 @@ exercised locally and by the suite; the §4 safety layer runs on Railway.
 │ Postgres      │   │  set, by kid)    │   │        │                     │
 │ ROW LEVEL     │   │ ROLE allowlist   │   │        ▼                     │
 │  SECURITY ◄───┼───┤  patient=REJECT  │   │  transcription.py  (mock 1st)│
-│ 9 tables      │   │  admin=readonly  │   │   └─ ElevenLabs Scribe v2    │
+│ 11 tables     │   │  admin=readonly  │   │   └─ ElevenLabs Scribe v2    │
 │ Realtime      │   │ clinic match     │   │      2 switches required     │
 └───────────────┘   │ Yjs CRDT sync    │   │        │                     │
         ▲           │ create_note_     │   │        ▼                     │
@@ -75,7 +83,24 @@ exercised locally and by the suite; the §4 safety layer runs on Railway.
                                            └──────────────────────────────┘
 ```
 
-**Endpoints.** All `/api/ai/*` require a verified JWT and fail closed.
+**Browser-to-service CORS.** The AI service is called directly from the browser,
+so it owns the CORS decision and no Vercel setting affects it. Production and
+localhost origins are listed explicitly; preview deployments are matched by
+`VERCEL_PREVIEW_ORIGIN_REGEX`, which is deliberately narrower than the obvious
+pattern because `*.vercel.app` is a shared namespace — a loose `...6ktv.*` would
+grant CORS to anyone registering a similarly-named project, and `.*` spans dots
+so it would admit nested labels too. Both were measured against the loose form.
+Starlette matches with `fullmatch`, which is what defeats a `.vercel.app.evil.com`
+suffix. `allow_origins` is never `*`: with `allow_credentials=True` browsers
+reject it outright.
+
+A rejected preflight returns `400` with **no** `Access-Control-Allow-Origin`
+header, so it surfaces in DevTools as a generic CORS failure rather than as a
+list this service controls — worth knowing, because the instinct is to look for a
+gateway problem.
+
+**Endpoints.** All `/api/ai/*` require a verified JWT, are **POST-only** (other
+methods return `405`), and fail closed.
 
 | Path | Purpose |
 |---|---|
@@ -92,6 +117,29 @@ record in **both** directions: text is redacted on the way out, and every claim
 is validated on the way back before anything is stored.
 
 ---
+
+### Deployment mechanics
+
+| Tier | Builder | Notes |
+|---|---|---|
+| Vercel | Next.js | `regions: ["sin1"]`; `NEXT_PUBLIC_*` inlined at **build** time, so a dashboard edit needs a redeploy |
+| Railway | **Nixpacks** (not Docker) | `railway.json` + `Procfile`; `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Supabase | migrations | `DEPLOY_20260901_all.sql`, four migrations in dependency order |
+
+**The spaCy model is not a pip dependency.** `en_core_web_sm` ships as a wheel
+outside PyPI, so `pip install -r requirements.txt` does not bring it and the
+redaction engine will not start without it. It has to be installed during the
+**build** rather than on first request: a runtime download puts a multi-second
+cold start on the PHI path, and a network failure there fails the request that
+most needs to succeed. Pinning the wheel URL in `requirements.txt` is preferable
+to a separate build command, because it makes the model a declared dependency
+rather than an out-of-band step someone can forget. `/ready` reports
+`redaction_engine` either way.
+
+**CORS changes require a Railway redeploy.** The header is emitted by FastAPI, so
+a frontend deploy has no effect on it — a distinction that costs an hour the
+first time it bites.
+
 
 ## 2. Data model
 
@@ -155,7 +203,7 @@ once. One definition per policy.
 
 ### RBAC at the database
 
-RLS on all nine tables; the UI adapts to role but is never the control. Clinic
+RLS on all eleven tables; the UI adapts to role but is never the control. Clinic
 scoping runs through `SECURITY DEFINER` helpers with pinned `search_path`,
 because a nested `EXISTS` on an RLS-protected table re-evaluates that table's RLS
 and raises `42501`.
