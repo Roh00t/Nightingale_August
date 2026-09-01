@@ -200,3 +200,38 @@ every page is `'use client'` with a `useEffect` waterfall, and there are no `rev
 - Renaming a table without updating its call sites in the same change
 - Claiming a phase passed without pasted command output
 - Adding a control to documentation before it exists in code
+
+---
+
+## Messaging, identity and degraded-state UI
+
+**M-T1. A provider's acceptance is not receipt.** Telegram returns a `message_id`
+when it accepts a message. That is `sent`, never `delivered`. Only a provider
+callback advances past it, and no code path may set `delivered` from inside this
+service.
+
+**M-T2. The delivery webhook fails closed.** It cannot require a JWT — Telegram
+holds none — so without `TELEGRAM_WEBHOOK_SECRET` it returns 403. A forged
+"delivered" is worse than a missing one: staff stop chasing a patient who never
+got the message.
+
+**M-T3. Telegram cannot message a phone number, and nothing may pretend it can.**
+A `chat_id` is obtained only when the patient opens the bot. An un-linked patient
+is unreachable on that channel and must be reported as such — never rerouted to
+another address, which is how a clinical message reaches the wrong person.
+
+**M-T4. Access tokens are stored as hashes only,** and every redemption failure
+returns one message. Distinguishing expired from unknown is an oracle for probing
+valid tokens.
+
+**M-T5. A token never grants a non-patient session.** Redemption refuses any
+profile whose role is not `patient`, regardless of how the token was minted.
+
+**UI-1. Degraded states are stated in words.** Never a colour alone, never an
+icon alone, never an absence. An empty critical-flags list reads as "there are
+none"; only a banner reads as "this was not checked", and those are opposite
+clinical actions.
+
+**UI-2. Never destroy user text to display an error.** A rejected save means the
+clinician's draft is the only copy in existence. Clearing, resetting or
+re-fetching over it turns a recoverable conflict into data loss.

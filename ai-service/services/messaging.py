@@ -87,10 +87,17 @@ def provider_configured() -> bool:
     provider = os.environ.get("MESSAGING_PROVIDER", "").strip().lower()
     if provider == "mock":
         return True
+    if provider == "telegram":
+        # The bot token is the credential; MESSAGING_PROVIDER_API_KEY is unused
+        # for this provider and checking it would report "not configured" for a
+        # correctly configured deployment.
+        from services.telegram import is_configured
+
+        return is_configured()
     return bool(os.environ.get("MESSAGING_PROVIDER_API_KEY"))
 
 
-def _dispatch(channel: str, destination: str, body: str) -> tuple[str, str]:
+async def _dispatch(channel: str, destination: str, body: str) -> tuple[str, str]:
     """
     Hand the message to the provider. Returns (provider_name, message_id).
 
@@ -112,6 +119,16 @@ def _dispatch(channel: str, destination: str, body: str) -> tuple[str, str]:
         # cannot contact a real patient even if pointed at a real number.
         return mock_dispatch(channel, destination, body)
 
+    if provider == "telegram":
+        from services.telegram import PROVIDER_NAME, send_message
+
+        # `destination` here is a Telegram chat_id, NOT a phone number. Telegram
+        # cannot message a phone; the chat_id was bound when the patient opened
+        # the bot through a t.me deep link. queue_delivery resolves it before
+        # calling this, and refuses rather than guessing if none is bound.
+        message_id = await send_message(destination, body)
+        return PROVIDER_NAME, message_id
+
     raise NotImplementedError(
         f"No messaging provider is wired (MESSAGING_PROVIDER={provider or "unset"!r}). "
         "Set MESSAGING_PROVIDER=mock for the reserved-range simulator, or "
@@ -119,7 +136,28 @@ def _dispatch(channel: str, destination: str, body: str) -> tuple[str, str]:
     )
 
 
-def queue_delivery(
+def resolve_telegram_chat(profile_id: str) -> int | None:
+    """
+    The chat_id bound to this patient, or None if they never opened the bot.
+
+    None is a real and common state, not an error: Telegram cannot be sent a
+    phone number, so an un-linked patient is genuinely unreachable on this
+    channel until they tap a t.me link. Callers must treat it as "not delivered"
+    rather than falling back to some other address — silently rerouting is how a
+    clinical message reaches the wrong person.
+    """
+    client = get_service_client()
+    rows = (
+        client.table("profiles")
+        .select("telegram_chat_id")
+        .eq("id", profile_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    return rows[0].get("telegram_chat_id") if rows else None
+
+
+async def queue_delivery(
     *,
     clinic_id: str,
     profile_id: str,
@@ -138,6 +176,9 @@ def queue_delivery(
     unresolved. Writing it afterwards would lose exactly the messages whose fate
     is least certain.
     """
+    # Telegram addresses a chat_id, not a number, so the E.164 check applies
+    # only to the channels that actually dial one. Running it on a chat_id would
+    # reject every valid Telegram send.
     if channel in ("whatsapp", "sms") and not _E164.match(destination or ""):
         # Caught here rather than at the provider, because a malformed number is
         # the single most common reason a patient never receives anything, and
@@ -174,7 +215,7 @@ def queue_delivery(
         )
 
     try:
-        provider, message_id = _dispatch(channel, destination, body or "")
+        provider, message_id = await _dispatch(channel, destination, body or "")
     except Exception as exc:
         client.table("message_deliveries").update({
             "status": "failed",

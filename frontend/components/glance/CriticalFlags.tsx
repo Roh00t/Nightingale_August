@@ -53,15 +53,15 @@ export function CriticalFlags({ highlights, onFlagClick, currentNoteVersion }: C
                                 wrong, or that the new text supports it. */}
               {isSourceModified(flag, currentNoteVersion) && (
                               <p
-                                className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+                                className="mt-1.5 inline-flex items-center gap-1 rounded bg-orange-600 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white"
                                 title={
                                   flag.source_note_version == null
                                     ? 'This highlight predates provenance tracking, so the source cannot be confirmed unchanged.'
                                     : `Extracted from version ${flag.source_note_version}; the note is now at ${currentNoteVersion}.`
                                 }
                               >
-                                <FileWarning className="w-2.5 h-2.5" />
-                                Source Modified
+                                <FileWarning className="w-3 h-3" />
+                                [SOURCE EDITED &mdash; VERIFY NOTE]
                               </p>
                             )}
             </div>

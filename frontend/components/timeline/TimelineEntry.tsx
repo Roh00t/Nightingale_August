@@ -174,10 +174,14 @@ export function TimelineEntry({
               patient and any auditor need to see WHAT was withdrawn, not just
               that something was. */}
           {entry.is_retracted && (
-            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5">
-              <p className="text-xs font-semibold text-amber-700">Withdrawn by the care team</p>
+            <div className="mb-2 rounded-md border-2 border-red-600 bg-red-50 dark:bg-red-950/40 px-3 py-2">
+              <span className="inline-block rounded bg-red-600 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+                [WITHDRAWN BY CARE TEAM]
+              </span>
               {entry.retraction_reason && (
-                <p className="text-[11px] text-muted-foreground mt-0.5">{entry.retraction_reason}</p>
+                <p className="mt-1.5 text-sm font-medium text-red-700 dark:text-red-400">
+                  Reason: {entry.retraction_reason}
+                </p>
               )}
             </div>
           )}
@@ -187,7 +191,7 @@ export function TimelineEntry({
             {isLabResult ? (
               <LabResultsDisplay content={entry.content as unknown as LabResultContent} metadata={entry.metadata} />
             ) : entry.content_text ? (
-              <p className={entry.is_retracted ? 'line-through opacity-60' : undefined}>
+              <p className={entry.is_retracted ? 'line-through decoration-2 decoration-red-600 opacity-70' : undefined}>
                 <SpanHighlightedText text={entry.content_text} span={isHighlighted ? highlightedSpan : null} />
               </p>
             ) : (

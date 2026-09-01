@@ -4,7 +4,7 @@ Sixteen failure modes a real clinic produces, and what this system actually does
 when it meets them. Written against the code as it stands on `master`, verified
 by running it rather than by reading it.
 
-**Verification basis:** 398 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
+**Verification basis:** 420 tests pass (`cd ai-service && .venv/bin/python -m pytest tests/ -q`);
 `tsc --noEmit` clean on both TypeScript projects; `next build` compiles; all three
 migrations applied to a throwaway PostgreSQL cluster built from
 `supabase/migrations/001_foundation.sql`, then re-applied to confirm idempotency.
@@ -368,7 +368,7 @@ As above.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Phone/WhatsApp identity | **SURVIVES** — OTP to a real GoTrue session |
+| 1 | Phone/WhatsApp identity | **SURVIVES** — OTP *and* token links to a real session |
 | 2 | Multi-clinic RLS isolation | **SURVIVES** |
 | 3 | Log scrubbing | PARTIAL — structured IDs only |
 | 4 | Verifiable redaction path | **SURVIVES** |
@@ -376,7 +376,7 @@ As above.
 | 6 | Timeout guardrails | **SURVIVES** |
 | 7 | 503 outage fallback | PARTIAL — one trigger surface of four |
 | 8 | Note concurrency (OCC) | **SURVIVES** |
-| 9 | Delivery tracing | PARTIAL — loop closed on mock, no live provider |
+| 9 | Delivery tracing | PARTIAL — live Telegram provider; reach requires patient opt-in |
 | 10 | Maker-checker + retraction | **SURVIVES** |
 | 11 | Conflict engine precedence | PARTIAL — detects, does not rank |
 | 12 | Confidence metrics | **SURVIVES** |
@@ -409,7 +409,7 @@ without behaviour". All three now have behaviour: delivery tracing with a signed
 webhook and monotonic status, retraction end-to-end from a Withdraw control to a
 patient-visible notice, and populated highlight provenance with a "Source
 Modified" tag. Item 10 moves to SURVIVES; 9 and 14 remain PARTIAL with the
-remaining gap named in each. 398 tests pass; delivery semantics and retraction
+remaining gap named in each. 420 tests pass; delivery semantics and retraction
 were checked by mutation rather than assumed.
 
 **Third pass** — mock provider, OTP flow, read-time provenance comparison.
@@ -482,3 +482,28 @@ inside the headers dict.
 signed with the key the project publishes, not the legacy symmetric secret a
 self-minted token would have used.
 
+**Fifth pass** — Telegram provider and token identity.
+
+Item 9 gains a real provider. `_dispatch` now sends via the Telegram Bot API
+(async, so it does not stall the event loop), and `POST
+/api/messaging/telegram-webhook` advances status from Telegram's own callbacks,
+authenticated with `X-Telegram-Bot-Api-Secret-Token` and failing closed at 403
+without the secret. Still PARTIAL, and the reason is a platform constraint rather
+than an omission: **Telegram cannot message a phone number.** A bot may only send
+to a `chat_id`, which exists only after the patient opens the bot themselves. So
+an un-linked patient is genuinely unreachable on this channel, and the system
+reports that rather than rerouting.
+
+Item 1 gains the link path that makes the above reachable — `POST
+/api/auth/patient-link` mints a token and returns **both** a `t.me` deep link and
+a `/portal/login?token=` URL, because "reachable on WhatsApp" does not imply "has
+Telegram". `POST /api/auth/redeem-token` exchanges it for a real GoTrue session.
+Only the SHA-256 hash is stored; every failure mode returns one indistinguishable
+message; non-patient roles are refused.
+
+**KISS UI pass.** The four degraded states now say what they mean in words rather
+than signalling by colour: `Offline Mode (Rule-Derived)`, `SAVE BLOCKED`,
+`[WITHDRAWN BY CARE TEAM]`, `[SOURCE EDITED — VERIFY NOTE]`. The governing case is
+that an empty flags list reads as "there are none" while a banner reads as "this
+was not checked" — opposite clinical actions. And a rejected save never clears the
+editor: the clinician's words are the only copy that exists.

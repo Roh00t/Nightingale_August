@@ -3,7 +3,7 @@
 Everything below is **manual** — none of it can be done from the repo. Ordered by
 dependency: each step assumes the previous one landed.
 
-Current state: 398 tests pass, both TypeScript projects typecheck, `next build`
+Current state: 420 tests pass, both TypeScript projects typecheck, `next build`
 compiles, 1 commit(s) ahead of `origin/master`.
 
 > **Secrets are never written into this file.** Read the generated webhook secret

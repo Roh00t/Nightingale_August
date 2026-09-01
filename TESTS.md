@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**398 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**420 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -56,6 +56,7 @@ live database; neither runs in pytest.
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
 | [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--38) | 38 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
 | [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
+| [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--22) | 22 | Real provider dispatch, webhook authenticity, passwordless token identity |
 
 ---
 
@@ -565,6 +566,40 @@ files — a moved directory, a renamed helper — every other assertion would pa
 vacuously while checking nothing.
 
 Checked by mutation: renaming `/summarize` to `/summarise` fails two tests.
+
+
+---
+
+## 17. Telegram dispatch and token identity — 22
+
+`ai-service/tests/test_telegram_messaging.py`
+
+The scenario: a patient with no email, who exists to the clinic as a phone number
+in a WhatsApp thread. The constraint that shapes every test is that **Telegram
+cannot message a phone number** — a bot may only send to a `chat_id`, which
+exists only after the person opens the bot themselves.
+
+So these are as much about refusing to pretend otherwise as about sending.
+Dispatch surfaces Telegram's own description verbatim, because "chat not found"
+(never tapped the link) and "bot was blocked by the user" (opted out) are
+different clinical situations and collapsing them sends the front desk after the
+wrong thing. A missing bot token refuses rather than no-ops. Messages over 4096
+chars are truncated with a marker rather than 400'd into silence. `parse_mode` is
+asserted **absent** — clinical text contains underscores and brackets that
+Markdown would mangle or reject.
+
+Deep links are validated against Telegram's `[A-Za-z0-9_-]{,64}` start-parameter
+alphabet, and the token generator is asserted to produce tokens inside it: a
+base64 token with `+ / =` silently loses characters and the patient gets "link no
+longer valid".
+
+The webhook fails closed at 403 without `TELEGRAM_WEBHOOK_SECRET`, and returns
+**200** for an unredeemable token — Telegram retries non-2xx indefinitely, and a
+distinguishable response would be an oracle for guessing tokens.
+
+Redemption stores only a SHA-256 hash, refuses non-patient roles, and returns one
+indistinguishable message across expired / consumed / unknown / exhausted — the
+test collects all four messages into a set and asserts it has size 1.
 
 ---
 

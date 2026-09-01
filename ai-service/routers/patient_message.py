@@ -283,7 +283,7 @@ async def send_patient_message(
         patient = get_profile(care_note["patient_id"])
         phone = (patient or {}).get("phone_e164")
         if phone:
-            queue_delivery(
+            await queue_delivery(
                 clinic_id=caller.clinic_id,
                 profile_id=care_note["patient_id"],
                 channel="whatsapp",

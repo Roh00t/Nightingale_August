@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**398 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**420 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > **Compliance posture — read this before quoting the security sections.**
 > This is a prototype built on **synthetic data only**. The design is
@@ -140,6 +140,50 @@ withholding it from the patient. The assessment therefore lives in
 `care_note_assessments` — a table with **no patient policy at all** — and a
 trigger additionally prevents it being written back into the patient-readable
 `glance_cache`.
+
+### Patient identity without an email
+
+A patient who exists to the clinic as a phone number in a WhatsApp thread can
+reach everything, and the mechanism is worth stating precisely because the
+obvious version does not exist.
+
+**Telegram cannot message a phone number.** A bot may only send to a `chat_id`,
+and a chat_id exists only after the person opens the bot themselves — there is no
+API to initiate contact. That is the consent model, not an obstacle, so the flow
+is a link rather than an outbound send:
+
+```
+POST /api/auth/patient-link      (staff)
+  └─→ t.me/<Bot>?start=<token>       shown at the desk, or sent over WhatsApp
+  └─→ /portal/login?token=<token>    any browser — "on WhatsApp" ≠ "has Telegram"
+        └─→ POST /api/auth/redeem-token → real GoTrue session
+```
+
+Only the SHA-256 hash of the token is stored. Every redemption failure —
+expired, consumed, unknown, attempt-exhausted — returns one indistinguishable
+message, because each distinction is an oracle for probing valid tokens. A token
+minted against a non-patient profile is refused outright.
+
+### KISS: degraded states are stated, never implied
+
+Users here are exhausted and in pain. Every degraded state says what it means in
+words, because the alternative is worse than useless:
+
+| State | What the clinician sees |
+|---|---|
+| AI unavailable | **Offline Mode (Rule-Derived)** — *"Absence of a flag does not imply absence of clinical concern."* |
+| Save rejected (OCC) | **SAVE BLOCKED: Another user updated this note.** *Draft preserved locally.* |
+| Retracted message | Solid red **[WITHDRAWN BY CARE TEAM]**, struck through, verbatim reason below |
+| Stale provenance | Solid orange **[SOURCE EDITED — VERIFY NOTE]** |
+
+The governing case is the first row. An empty critical-flags panel reads as
+*"there are none"*; only a banner reads as *"this was not checked"* — and those
+are opposite clinical actions. Colour alone, icons alone and hover-to-reveal are
+not used for any clinical state.
+
+**A rejected save never clears the editor.** The clinician's draft is the only
+copy in existence at that moment; destroying it to display an error turns a
+recoverable conflict into data loss.
 
 ### Feature degradation — "Local Only" mode
 
@@ -384,7 +428,7 @@ AI service will not report ready without it.
 cd ai-service && .venv/bin/python -m pytest tests/ -v
 ```
 
-Expect **398 passed**. The suites build an ephemeral PostgreSQL cluster, apply
+Expect **420 passed**. The suites build an ephemeral PostgreSQL cluster, apply
 `supabase/migrations/001_foundation.sql` verbatim, and seed both demo clinics.
 No cloud project, no Docker, no credentials, and no metered API calls.
 
@@ -983,7 +1027,7 @@ while breaking every authenticated endpoint.
 ## Testing
 
 ```bash
-npm test                     # 398 pytest tests (uses ai-service/.venv)
+npm test                     # 420 pytest tests (uses ai-service/.venv)
 npm run typecheck            # tsc --noEmit across frontend + collab-server
 npm run build                # Next.js production build
 node scripts/measure_glance.mjs --n 100    # glance P95, needs the app running

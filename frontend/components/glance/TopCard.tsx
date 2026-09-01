@@ -47,6 +47,12 @@ interface TopCardProps {
   conflictCount?: number;
   /** Current care_notes.version, for detecting stale highlight sources. */
   currentNoteVersion?: number | null;
+  /**
+   * Set when the AI could not answer (503, timeout, unreachable). Drives the
+   * amber degraded banner. Distinct from "the AI ran and found nothing" — those
+   * look identical on screen unless one of them says so.
+   */
+  aiDegraded?: boolean;
   onReviewConflicts?: () => void;
   /** Raises the chip to critical styling when an allergy conflict is present. */
   hasCriticalConflict?: boolean;
@@ -73,6 +79,7 @@ const changeColors: Record<string, string> = {
 };
 
 export function TopCard({
+  aiDegraded = false,
   currentNoteVersion,
   glanceCache,
   highlights,
@@ -105,6 +112,24 @@ export function TopCard({
       {conflictCount > 0 && (
         <Card className="border-amber-200 bg-amber-50">
           <CardContent className="py-3">
+      {/* Degraded state, stated in words rather than implied by a colour.
+          A tired clinician reading an empty flags list concludes "there are
+          none" — the one reading a banner concludes "this was not checked".
+          Those are opposite clinical actions, so the difference is spelled
+          out rather than left to a subtle visual cue. */}
+      {aiDegraded && (
+        <div
+          role="alert"
+          className="mb-3 rounded-md border-2 border-amber-600 bg-amber-100 dark:bg-amber-950/50 px-3 py-2"
+        >
+          <p className="text-sm font-bold uppercase tracking-wide text-amber-900 dark:text-amber-300">
+            Offline Mode (Rule-Derived)
+          </p>
+          <p className="mt-1 text-sm font-medium leading-relaxed text-amber-900 dark:text-amber-200">
+            Absence of a flag does not imply absence of clinical concern.
+          </p>
+        </div>
+      )}
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-4 h-4 text-amber-600" />

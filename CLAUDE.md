@@ -195,6 +195,75 @@ frontend/
 
 ---
 
+## 6b. Messaging, identity and UI rules
+
+### Telegram environment
+
+| Key | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot credential. Absent → dispatch **refuses**; it never falls back to a no-op. |
+| `TELEGRAM_BOT_USERNAME` | For `t.me/<Bot>?start=<token>` deep links. |
+| `TELEGRAM_WEBHOOK_SECRET` | Compared against `X-Telegram-Bot-Api-Secret-Token`. Absent → webhook **403s**. |
+| `MESSAGING_PROVIDER` | `telegram` \| `mock` \| unset. Unset means no provider and deliveries stay `queued`. |
+| `PATIENT_PORTAL_URL` | Base for `/portal/login?token=…`, the non-Telegram path. |
+
+### Passwordless identity — the constraint that shapes it
+
+**Telegram cannot message a phone number.** A bot may only send to a `chat_id`,
+which exists only after the person opens the bot themselves. There is no API to
+initiate contact. That is the consent model, not an obstacle, and any code that
+implies otherwise is describing something the platform does not do.
+
+So reaching a patient who has no email is a two-step flow:
+
+1. Front desk calls `POST /api/auth/patient-link` → token + both links.
+2. Patient taps `t.me/<Bot>?start=<token>` (or opens the portal link in any
+   browser — "reachable on WhatsApp" does not imply "has Telegram").
+3. Telegram delivers `/start <token>` **with** the chat_id; the webhook binds it.
+4. Only now can the clinic message them.
+
+Rules for this path:
+
+- Store **only** the SHA-256 hash. The table is staff-readable for support, and a
+  plaintext token there is a credential lying in the open.
+- Tokens use `secrets.token_urlsafe`, because Telegram's start parameter permits
+  only `[A-Za-z0-9_-]` and ≤64 chars. A base64 token with `+ / =` silently loses
+  characters and the patient gets "link no longer valid".
+- **Every** redemption failure returns one message. Expired, consumed, unknown
+  and attempt-exhausted must be indistinguishable — each distinction is an
+  oracle, and "unknown" lets someone probe for valid tokens.
+- `redeem_token` refuses any profile whose role is not `patient`. A token minted
+  against a staff profile would be a password-free path into a clinical account.
+
+### KISS UI rules — the reader is exhausted and in pain
+
+Every degraded state is stated **in words**, never implied by a colour or an
+absence. The governing case: a clinician reading an empty flags list concludes
+*"there are none"*; one reading a banner concludes *"this was not checked"*.
+Those are opposite clinical actions.
+
+| State | Required treatment |
+|---|---|
+| AI unavailable | Amber bordered banner: **"Offline Mode (Rule-Derived) — Absence of a flag does not imply absence of clinical concern."** |
+| OCC save rejected | Red banner: **"SAVE BLOCKED: Another user updated this note."** The draft is **never** cleared, reset or re-fetched over. |
+| Retracted message | Solid red **[WITHDRAWN BY CARE TEAM]** badge, heavy strike-through, verbatim reason below. |
+| Stale provenance | Solid orange **[SOURCE EDITED — VERIFY NOTE]** badge. |
+
+Constraints: no gradient-only signalling, no icon-only meaning, no hover-to-reveal
+for anything clinical, and uppercase bold for the four states above. A tired
+reader must not have to interpret.
+
+**Never destroy user text to show an error.** A rejected save means their words
+are the only copy that exists.
+
+### Tests
+
+```bash
+cd ai-service && .venv/bin/python -m pytest tests/test_telegram_messaging.py -v
+```
+
+---
+
 ## 7. Traps
 
 - `.env.demo` ships every value **blank**. Blank is worse than absent: it defeats the

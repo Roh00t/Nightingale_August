@@ -114,7 +114,7 @@ async def request_otp(request: RequestOTPRequest) -> RequestOTPResponse:
     try:
         # Sent through the traced path, so an OTP that never arrives is visible
         # as an unresolved delivery rather than as a patient who "did not try".
-        queue_delivery(
+        await queue_delivery(
             clinic_id=profile["clinic_id"],
             profile_id=profile["id"],
             channel="whatsapp",

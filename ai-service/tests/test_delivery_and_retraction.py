@@ -74,7 +74,7 @@ class TestDeliveryStatusSemantics:
         assert msg.STATUS_ORDER["failed"] > msg.STATUS_ORDER["delivered"]
         assert msg.STATUS_ORDER["undeliverable"] > msg.STATUS_ORDER["read"]
 
-    def test_malformed_number_is_rejected_before_dispatch(self, monkeypatch):
+    async def test_malformed_number_is_rejected_before_dispatch(self, monkeypatch):
         """
         A malformed number is the commonest reason a patient never receives
         anything, and the carrier's rejection arrives asynchronously if at all —
@@ -82,12 +82,12 @@ class TestDeliveryStatusSemantics:
         """
         for bad in ["91234567", "+65 9123 4567", "", "not-a-number"]:
             with pytest.raises(msg.DeliveryError):
-                msg.queue_delivery(
+                await msg.queue_delivery(
                     clinic_id=CLINIC_1, profile_id="p1",
                     channel="sms", destination=bad,
                 )
 
-    def test_no_provider_means_queued_not_sent(self, monkeypatch):
+    async def test_no_provider_means_queued_not_sent(self, monkeypatch):
         """
         With no provider wired, nothing was contacted. The row must say so
         rather than defaulting to something reassuring — a comfortable lie here
@@ -112,7 +112,7 @@ class TestDeliveryStatusSemantics:
             def execute(self): return type("R", (), {"data": [{"id": "d1", **captured}]})()
 
         monkeypatch.setattr(msg, "get_service_client", lambda: type("C", (), {"table": lambda s, n: _Tbl()})())
-        rec = msg.queue_delivery(
+        rec = await msg.queue_delivery(
             clinic_id=CLINIC_1, profile_id="p1",
             channel="whatsapp", destination="+6591234567",
         )

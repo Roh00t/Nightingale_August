@@ -425,6 +425,10 @@ export function CareNoteEditor({
           // Someone else saved since this editor loaded. Do NOT retry with the
           // fresh version — that is precisely the clobber this prevents. Stop,
           // and make the clinician decide.
+          // The editor content is deliberately untouched here. Clearing or
+          // resetting it on a rejected save would destroy the only copy of what
+          // the clinician just wrote — the whole point of refusing the write is
+          // that their text is still worth something.
           setConflictDetected(true);
           setSaveStatus('error');
           toast.error(
@@ -688,12 +692,15 @@ export function CareNoteEditor({
           role="alert"
           className="border-b border-destructive/40 bg-destructive/10 px-3 py-2 sm:px-6"
         >
-          <p className="text-xs font-semibold text-destructive">
-            Not saved — another clinician edited this note
+          <p className="text-sm font-bold text-destructive uppercase tracking-wide">
+            SAVE BLOCKED: Another user updated this note
           </p>
-          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-            Your changes are still shown here but were <strong>not</strong> written to the
-            record. Copy anything you need, reload to see the current note, then re-apply.
+          <p className="text-sm text-destructive/90 mt-1 leading-relaxed font-medium">
+            Your draft has been preserved locally. It was <strong>NOT</strong> saved.
+          </p>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+            Copy anything you need, reload to see the current note, then re-apply your
+            changes. Nothing is lost while this tab stays open.
           </p>
         </div>
       )}

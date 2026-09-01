@@ -1332,6 +1332,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onReviewConflicts={handleReviewConflicts}
           />
           <TopCard
+            aiDegraded={conflictsDegraded !== null}
             currentNoteVersion={careNote.version}
             glanceCache={careNote.glance_cache}
             highlights={highlights}
@@ -1621,6 +1622,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onReviewConflicts={handleReviewConflicts}
           />
           <TopCard
+            aiDegraded={conflictsDegraded !== null}
             currentNoteVersion={careNote.version}
             glanceCache={careNote.glance_cache}
             highlights={highlights}
