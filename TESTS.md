@@ -20,6 +20,24 @@ cluster from `supabase/migrations/001_foundation.sql`; the AI suites stub only
 the Groq call and the JWT dependency; the voice suite uses a deterministic mock
 transcript. A grader clones the repo and the suite passes.
 
+**Two habits produced most of the findings below**, and both are worth stating
+because a green suite is not evidence on its own:
+
+- **Mutation testing.** After a fix, the fix is deliberately broken again to
+  confirm a test notices. This caught a ranking floor that made the learning loop
+  inert, a regression guard that passed for the wrong reason, and two assertions
+  that were matching their own module docstrings rather than the code.
+- **Running rather than reading.** A live preflight, a real GoTrue exchange, a
+  URL against a live route. Ten of the defects in the table were found this way
+  and none were visible in review — including a `token` vs `token_hash`
+  parameter where both spellings look plausible and the endpoint returns a bare
+  400.
+
+**One caveat on scope.** The suite proves the migrations and the service. It
+cannot prove what is deployed — those diverged twice this week. `node
+scripts/verify_patient_isolation.mjs` and `supabase/verify_grants.sql` cover the
+live database; neither runs in pytest.
+
 | Suite | Tests | What it proves |
 |---|---|---|
 | [`test_clinical_safety`](#1-clinical-safety-layer--64) | 64 | The guardrails between the LLM and the record |
@@ -504,8 +522,31 @@ current; the hash catches it. An edit to an unrelated sentence stays current,
 because a tag that always fires is a tag nobody reads. Unknown states resolve to
 `UNVERIFIABLE`, never `CURRENT`.
 
+**CORS.** The production origin was absent from `allow_origins`, and the symptom
+does not read as configuration: Starlette answers an unlisted origin with `400`
+and *no* `Access-Control-Allow-Origin` header, so DevTools reports a generic CORS
+failure and the request never leaves. Measured against the deployment before the
+fix — the Vercel origin got 400 with no header while localhost got 200 with one.
+
+The preview-URL tests are the interesting half. `*.vercel.app` is a **shared**
+namespace, so the natural pattern `...6ktv.*\.vercel\.app` grants CORS to
+whoever registers `nightingale-august-frontend-6ktvevil`, and because `.*` spans
+dots it also admits `...6ktv.attacker.vercel.app`. Both were measured as matching
+the loose form. Five lookalike origins are asserted refused, and two assertions
+run against the *pattern itself* — requiring a leading hyphen and excluding dots
+— because a future edit that loosened either would still pass a happy-path
+preflight test.
+
+**Session minting.** The self-signed HS256 shortcut was measured **working**
+against this project — the legacy symmetric secret is still enabled alongside the
+published ES256 keys — and is refused anyway: no session to revoke, no refresh
+token, and it stops verifying the day Supabase disables symmetric secrets. Two
+assertions use AST rather than grep, because the modules name the things they
+forbid while explaining why.
+
 Checked by mutation: defaulting the mock on, letting it accept any destination,
-and trusting version over hash each fail tests.
+trusting version over hash, widening `MINTABLE_ROLES`, redeeming with the service
+key, and substituting the loose CORS regex each fail tests.
 
 
 ---
@@ -531,6 +572,11 @@ Checked by mutation: renaming `/summarize` to `/summarise` fails two tests.
 
 Every one would have shipped looking correct.
 
+Ten of these were found by **running** something rather than reading it — a live
+preflight, a real session exchange, a URL against a live route, the isolation
+verifier. Three were found by **mutation testing**: deliberately breaking the fix
+to confirm the test noticed. Two were tests that passed for the wrong reason.
+
 | # | Defect | Found by |
 |---|---|---|
 | 1 | `\b\d+\b` does not match `100` in `100mg` — a hallucinated dose passed the patient gate | Patient firewall tests |
@@ -550,6 +596,18 @@ Every one would have shipped looking correct.
 | 18 | Patient portal rendered the internal clinical risk assessment (CRITICAL/HIGH flags) written about that patient | Audit |
 | 19 | Contradiction engine flagged dose titration and rendered "10mg vs 10mg vs 10mg" — dedup keyed on author, not value | Audit |
 | 20 | Revert test was tautological; snapshots held change descriptions that could not be restored | Audit |
+| 21 | The patient-facing maker-checker gate existed with passing unit tests and **nothing called it** — the browser inserted straight into `timeline_entries`, so an edit made after the draft returned reached the patient unscreened | Import audit |
+| 22 | RLS permitted a clinician's own token to create a patient-visible row directly, so the gate could be skipped by not calling it | Gate design review |
+| 23 | The learning loop could bury a `critical` highlight: severity contributes only 0.30, so 40 dismissals ranked an anaphylaxis flag below a recent `medium` item | Resilience audit |
+| 24 | Groq client had **no timeout** — a stalled upstream held an async worker until the connection dropped elsewhere, while `/health` kept answering | Resilience audit |
+| 25 | `callAI` sent `Authorization: Bearer ` when clicked before the session resolved; 4 of 5 call sites were unguarded and the 401 was indistinguishable from being signed out | Resilience audit |
+| 26 | **The assessment fix caused a second leak.** The display object recomposed for clinicians is also a write source, so a clinician ticking a care-plan item re-persisted the assessment into the patient-readable column | Live verifier |
+| 27 | `test_no_provider_means_queued_not_sent` asserted "no provider" while clearing only the API key — it passed until `MESSAGING_PROVIDER` was legitimately configured, then ran against a configured provider while claiming otherwise | Config change |
+| 28 | Trailing slash in `NEXT_PUBLIC_AI_SERVICE_URL` produced `//api/ai/...`, which FastAPI answers with a hard **404** that reads as "endpoint missing" | URL audit |
+| 29 | `VoiceCapture` built its own URL from the same env var, so a fix to the shared client would have left ambient capture silently 404ing | URL audit |
+| 30 | Production origin absent from `allow_origins`; the 400-with-no-header response surfaces as a generic browser CORS error rather than a list this service owns | Live preflight probe |
+| 31 | GoTrue's `/verify` needs `token_hash`, not `token` — both spellings look plausible and the endpoint returns a bare 400 | Live round trip |
+| 32 | The repo had **no committed `.gitignore`** (masked by a global ignore), so a fresh clone protected neither `.env` nor `node_modules` | Pre-deploy audit |
 
 ---
 
@@ -567,6 +625,25 @@ Every one would have shipped looking correct.
 
 # Voice capture (zero credits)
 .venv/bin/python -m pytest tests/test_transcribe_endpoint.py -v
+
+# Security hardening: mock provider, OTP, session minting, CORS, provenance
+.venv/bin/python -m pytest tests/test_hardening.py -v
+
+# Does the frontend call endpoints this service actually serves?
+.venv/bin/python -m pytest tests/test_frontend_route_contract.py -v
+
+# The patient-facing firewall and its database enforcement
+.venv/bin/python -m pytest tests/test_patient_message_gate.py \
+  tests/test_rbac_scope.py -v
+```
+
+### Against a live deployment
+
+Not part of pytest, because they need a reachable project and real credentials:
+
+```bash
+node scripts/verify_patient_isolation.mjs   # 9 assertions, API-level
+# supabase/verify_grants.sql                # paste into the SQL editor
 ```
 
 **Requires** `initdb`, `pg_ctl`, `pg_isready` on PATH for the database suites
