@@ -49,6 +49,117 @@ lost is live cursors and simultaneous co-editing.
 
 ---
 
+## Features & architecture
+
+What the system does, and where each capability is enforced. Every row links to
+the section that explains the mechanism rather than restating it.
+
+### At a glance
+
+| Capability | Enforced at | Detail |
+|---|---|---|
+| **Shared longitudinal care note** | Supabase + Yjs CRDT | one record per patient, collaborative across clinician, staff and patient |
+| **Glance View** | Server Component, single indexed read | measured **P95 79.7 ms** against a 300 ms budget |
+| **AI safety layer** | `ai-service/services/safety/` | [below](#ai-safety-layer) |
+| **PHI redaction** | `services/redaction.py` + egress guard | [PHI redaction](#phi-redaction--strictly-ordered-and-structurally-enforced) |
+| **RBAC / tenant isolation** | PostgreSQL RLS | [Multi-tenant isolation](#multi-tenant-isolation) |
+| **Maker-checker firewall** | RLS + `/api/ai/send-patient-message` | [The maker-checker firewall](#the-maker-checker-firewall) |
+| **Ambient voice capture** | ElevenLabs Scribe v2, mock-first | [Ambient voice capture](#ambient-voice-capture) |
+| **Graceful degradation** | client-side, no server dependency | [below](#feature-degradation--local-only-mode) |
+
+### Deployment topology
+
+| Tier | Host | Detail |
+|---|---|---|
+| **Next.js 15** (App Router, RSC) | **Vercel**, `sin1` | `NEXT_PUBLIC_*` inlined at build time |
+| **PostgreSQL**, **11** RLS-protected tables | **Supabase**, managed | Auth (GoTrue, ES256), RLS, Realtime |
+| **FastAPI** AI service | **Railway**, Nixpacks | Groq · Presidio · ElevenLabs |
+| **Hocuspocus** (Yjs CRDT) | **not deployed** | degrades to "Local Only" |
+
+> **Table count.** Nine tables carry RLS in `001_foundation.sql`; the September
+> migrations add `patient_access_tokens` and `message_deliveries`, both
+> RLS-enabled, for **eleven**. Counted against the live database — earlier
+> documentation saying nine predates those migrations.
+
+### AI safety layer
+
+The interesting part of this build is not the model. It is the layer that treats
+the model as fallible.
+
+- **Verbatim extraction over generation.** A highlight must quote a span that
+  exists in the record. Paraphrase is the failure mode — it is where a plausible
+  sentence that nobody wrote enters a clinical note, and it cannot be traced back
+  to a source because there is no source.
+- **Deterministic risk floors.** Rules the model cannot lower. If a potassium of
+  6.4 is present, the finding is `critical` regardless of what the model
+  proposed; `risk_floor` and `model_risk` are stored **separately** so a badge
+  can always show which one set the level.
+- **Measured confidence with abstention.**
+  `0.50 × agreement + 0.35 × verification + 0.15 × rules`. Below **0.60** the
+  claim is withheld for review rather than guessed — *except* critical findings,
+  which surface flagged, because silently withholding a possible anaphylaxis is
+  the worse failure.
+- **Three quantities, never collapsed.** `importance_score` (queue position),
+  `confidence_score` (reliability) and `risk_level` (severity) are separate
+  columns. Rendering importance as confidence is the decoration failure: it looks
+  like a trust signal while measuring queue position.
+- **No invented percentage, ever.** Where confidence cannot be computed, the
+  Sunshine block reads **"not assessed"** and the per-highlight
+  `ConfidenceBadge` renders **nothing at all** rather than defaulting to a band.
+  An abstained item is instead labelled as withheld-pending-review, so "no badge"
+  and "withheld" stay distinguishable.
+
+### Privacy & redaction
+
+PHI is stripped **before** any Groq call, never after — and the ordering is
+enforced structurally rather than by convention. Every model call funnels through
+one chokepoint where `assert_safe_for_model()` re-reads the payload and **raises
+rather than repairs**: silently fixing one leaked field would hide the call path
+that skipped redaction.
+
+Detection is Presidio + spaCy `en_core_web_sm` (English recognizers only),
+layered with custom Singapore recognizers that off-the-shelf Presidio misses
+entirely — **NRIC/FIN** including the 2022 **M** series, `+65` phone formats, and
+local naming conventions (`bin` / `binte` / `s/o` / `d/o` / `a/l` / `a/p`, CJK
+names, titled and labelled forms).
+
+Logs are scrubbed independently, on the **root** logger, so uvicorn access lines
+and third-party tracebacks are covered — those are the records most likely to
+carry raw input.
+
+### Access control
+
+Enforcement is at the database. The UI adapts to role; it is never the control.
+
+A patient cannot read internal clinical notes, raw AI-scribed entries, or the
+internal assessment written about them. The last one is worth stating precisely,
+because it is where this codebase learned its most expensive lesson: **RLS is
+row-level, not column-level.** A patient-readable row exposes every column in it,
+so hiding a field in a server component hides it from the page without
+withholding it from the patient. The assessment therefore lives in
+`care_note_assessments` — a table with **no patient policy at all** — and a
+trigger additionally prevents it being written back into the patient-readable
+`glance_cache`.
+
+### Feature degradation — "Local Only" mode
+
+When the Hocuspocus collaborative server is unreachable, the editor waits 5 s,
+then shows an amber **"Local Only"** badge and falls back to reading and writing
+`yjs_state` **directly against Supabase**.
+
+This is designed degradation, not a failure state. Edits are saved and survive a
+reload; what is lost is live cursors and simultaneous co-editing, and the badge
+says so rather than pretending to be connected. Optimistic concurrency covers
+that window: a second clinician's save is **refused** rather than allowed to
+silently erase the first.
+
+The same principle runs through the AI paths — a timeout or a 503 renders a
+rule-derived summary labelled **"Offline Mode (Rule-Derived)"**, because an empty
+"critical flags" panel does not read as *"we could not check"*, it reads as
+*"there are none"*.
+
+---
+
 ## Core architecture
 
 ```
