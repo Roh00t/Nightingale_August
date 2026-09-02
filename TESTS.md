@@ -56,7 +56,7 @@ live database; neither runs in pytest.
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
 | [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--41) | 41 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
 | [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
-| [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--22) | 22 | Real provider dispatch, webhook authenticity, passwordless token identity |
+| [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--26) | 26 | Real provider dispatch, webhook authenticity, passwordless token identity |
 | [`test_rate_limiting`](#18-rate-limiting--9) | 9 | The unauthenticated surface is bounded; the limiter cannot become the vulnerability |
 | [`test_audit_boundaries`](#19-audit-boundaries--18) | 18 | Pins the documented LIMITATIONS so claims cannot drift |
 
@@ -572,7 +572,7 @@ Checked by mutation: renaming `/summarize` to `/summarise` fails two tests.
 
 ---
 
-## 17. Telegram dispatch and token identity — 22
+## 17. Telegram dispatch and token identity — 26
 
 `ai-service/tests/test_telegram_messaging.py`
 
