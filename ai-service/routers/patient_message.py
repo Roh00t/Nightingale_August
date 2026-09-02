@@ -88,7 +88,7 @@ class DraftPatientMessageResponse(BaseModel):
 )
 async def draft_patient_message(
     request: DraftPatientMessageRequest,
-    caller: CallerIdentity = Depends(require_caller),
+    caller: CallerIdentity = Depends(require_roles("clinician", "admin")),
 ) -> DraftPatientMessageResponse:
     logger.info(
         "Draft patient message for care_note_id=%s with %d entries",

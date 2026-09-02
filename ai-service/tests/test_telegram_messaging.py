@@ -338,3 +338,73 @@ class TestTelegramCannotMessageAPhoneNumber:
 
         src = inspect.getsource(msg.queue_delivery)
         assert 'channel in ("whatsapp", "sms")' in src
+
+
+class TestWebhookReplayIdempotency:
+    """
+    Assessment §2.6. `update_id` was parsed and never used, so a captured
+    callback could be replayed indefinitely.
+
+    The impact was low but *incidentally*: status transitions are monotonic and
+    tokens are single-use, so a replay happened to be a no-op. Either property
+    could be relaxed later without anyone noticing the window reopening — which
+    is why this is now an explicit barrier rather than an emergent one.
+    """
+
+    def _post(self, update_id, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import main
+        import routers.messaging as mr
+
+        monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "s3cret")
+        monkeypatch.setattr(
+            mr, "link_telegram_chat",
+            lambda **kw: {"profile_id": "p1", "clinic_id": "c1", "chat_id": kw["chat_id"]},
+        )
+        return TestClient(main.app).post(
+            "/api/messaging/telegram-webhook",
+            json={"update_id": update_id,
+                  "message": {"chat": {"id": 4242}, "text": "/start abc123"}},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
+        )
+
+    def test_replayed_update_is_ignored(self, monkeypatch):
+        import routers.messaging as mr
+
+        mr._SEEN_UPDATE_IDS.clear()
+        first = self._post(90001, monkeypatch)
+        second = self._post(90001, monkeypatch)
+        assert first.json()["result"] == "linked"
+        assert second.json()["result"] == "duplicate"
+
+    def test_distinct_updates_still_process(self, monkeypatch):
+        """A replay guard that rejects new traffic is an outage."""
+        import routers.messaging as mr
+
+        mr._SEEN_UPDATE_IDS.clear()
+        assert self._post(90002, monkeypatch).json()["result"] == "linked"
+        assert self._post(90003, monkeypatch).json()["result"] == "linked"
+
+    def test_seen_set_is_bounded(self, monkeypatch):
+        """
+        Unbounded growth would make the replay guard a memory-exhaustion vector —
+        attacker-chosen ids, one dict entry each.
+        """
+        import routers.messaging as mr
+
+        mr._SEEN_UPDATE_IDS.clear()
+        for i in range(mr._SEEN_LIMIT + 500):
+            mr._already_processed(i)
+        assert len(mr._SEEN_UPDATE_IDS) <= mr._SEEN_LIMIT
+
+    def test_missing_update_id_does_not_block(self, monkeypatch):
+        """
+        Telegram always sends update_id, but a malformed payload must not be
+        treated as a duplicate of every other malformed payload.
+        """
+        import routers.messaging as mr
+
+        mr._SEEN_UPDATE_IDS.clear()
+        assert mr._already_processed(None) is False
+        assert mr._already_processed(None) is False

@@ -32,12 +32,52 @@ functions are short-lived and share no memory between invocations, so a CRDT
 authority cannot live there. The client detects its absence and degrades to
 single-user local mode — an amber "Local Only" badge, `yjs_state` loaded from and
 written straight back to Supabase. Edits persist and survive reload; what is lost
-is live cursors and simultaneous co-editing. §1 real-time sync is therefore
-exercised locally and by the suite; the §4 safety layer runs on Railway.
+is live cursors and simultaneous co-editing. §5 real-time sync is therefore
+exercised locally and by the suite; the §8 safety layer runs on Railway.
 
 ---
 
-## 1. Architecture
+## Twelve Core Architectural Criteria
+
+The architecture is built around three distinct trust signals (clinical severity, system reliability, and workflow urgency) rather than a single meaningless confidence score. This brief evaluates the system against the twelve core clinical integration criteria, explicitly highlighting where we enforce strict design boundaries over hallucinated capabilities.
+
+## 1. Audio Processing & Multilingual Extraction
+
+**Within-Statement Code-Switching:** We utilize ElevenLabs Scribe v2 without language code pinning. This prevents forced English phonetics, capturing regional dialects and code-switching natively.
+
+**Multilingual Downstream Processing:** Downstream AI processing handles unpinned phonetic outputs organically. We extract directly from the raw transcript rather than forcing a lossy translation layer.
+
+**Speaker Attribution and Diarization:** Diarization is handled upstream by Scribe v2. Crucially, speaker labels explicitly survive our PHI redaction layer, ensuring that clinical provenance ("I've been dizzy" from a patient vs. clinician) is maintained before any LLM sees the text.
+
+## 2. Provenance & State Preservation
+
+**Immutable, Version-Bound Provenance:** The note_versions table retains full historical snapshots in JSONB. Reverting is additive—restoring a previous version writes a new sequential snapshot, ensuring the superseded state is permanently recoverable.
+
+**Real-Time Collaborative Editing Without Lost Updates:** Real-time editing is mediated via a Hocuspocus server and Yjs CRDTs over WebSockets. If the collab server is unreachable, the system elegantly degrades to a single-user local mode, saving yjs_state directly to Supabase via strict Optimistic Concurrency Control.
+
+**AI Regeneration that Preserves Human-Confirmed State:** AI edits cannot silently overwrite human work. File writes happen server-side; a browser session cannot forge an AI-authored system entry, and deterministic advisory locks prevent concurrent flush collisions during version allocation.
+
+## 3. Fact Extraction & Clinical Contradiction
+
+**Fact Extraction Under Negation:** The system utilizes strict extraction over generation. If a claim is not a byte-exact substring of the source, it is rejected and never stored. Deterministic regex risk floors prevent negated findings (e.g., "anaphylaxis ruled out") from escalating to critical alerts.
+
+**Explicit Handling of Contradictory Assertions:** Human-human and cross-role contradictions are surfaced server-side via /api/ai/conflicts. The system never arbitrates; if a clinician writes 10mg and a nurse writes 100mg, it displays both verbatim for human resolution.
+
+**Self-Learning (Clinic-Scoped & Bounded):** The learning loop is strictly clinic-scoped and resistant to alert fatigue. Critical items have a 0.90 importance floor that learned weight cannot bury, and dismissal bursts (>10 in 5 minutes) are excluded from training. We mitigate exposure bias by randomly promoting 5% of unsurfaced items into the review queue.
+
+## 4. Strict Design Boundaries & Deliberate Omissions
+
+Based on our recent vulnerability assessments, we deliberately omit certain automated features that pose unacceptable clinical risks.
+
+| Feature Category | Architectural Stance & Omission Rationale |
+|---|---|
+| Streaming Real-Consult Audio | We cap audio at 120s and process whole-file transcripts after capture. Streaming metered audio without server-side boundaries risks silent credit exhaustion. Validating file size before the metered step is our absolute control. |
+| Medical Terminology & Dosage Confirmation | We refuse to perform LLM-based dosage validation. Grounding confirms transcription accuracy (set membership, not substring matching), but determining clinical safety requires an external, deterministic, licensed national formulary. |
+| Distinct Audience Readability | Patient-facing text is heavily gated against prohibited speech acts (diagnosis, prognosis) and requires named human approval. We prioritize strict redaction over generative "dumbing down" of clinical text, which risks altering medical meaning. |
+
+---
+
+## 5. Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -141,7 +181,7 @@ a frontend deploy has no effect on it — a distinction that costs an hour the
 first time it bites.
 
 
-## 2. Data model
+## 6. Data model
 
 ```
 clinics ─┬─< profiles ──────────────< interaction_log
@@ -199,7 +239,7 @@ once. One definition per policy.
 
 ---
 
-## 3. Security
+## 7. Security
 
 ### RBAC at the database
 
@@ -360,9 +400,9 @@ string must NOT appear in the text we would send to Groq".
 
 ---
 
-## 4. Clinical safety layer
+## 8. Clinical safety layer
 
-### 4.1 Extraction over generation
+### 8.1 Extraction over generation
 
 **Decision made before any prompt was written: extraction.** A paraphrase
 retains no origin, so there is nothing to validate. Every claim must be an exact
@@ -381,7 +421,7 @@ text that does not support the claim, which is worse than no span. Rejection rat
 is exposed as a drift signal; a rising rate means the model has slid toward
 paraphrase.
 
-### 4.2 Deterministic risk floors
+### 8.2 Deterministic risk floors
 
 ```
 final_risk = max(deterministic_floor, model_proposal)
@@ -403,7 +443,7 @@ escalate. Over-firing on negated findings is a direct alert-fatigue driver.
 Every floor names the rule that produced it, so a wrong badge traces to a
 specific pattern rather than to model temperament.
 
-### 4.3 Confidence and abstention
+### 8.3 Confidence and abstention
 
 Self-reported model confidence is decoration, so the model is never asked. The
 score is computed from three observable signals:
@@ -434,7 +474,7 @@ flagged unverified. Silently withholding a possible anaphylaxis is a worse
 failure than showing a clinician something uncertain. Abstention protects
 against noise, not against safety-relevant recall.
 
-### 4.4 Clinical contradiction engine
+### 8.4 Clinical contradiction engine
 
 Human-human contradictions are real and routine. This is a different problem
 from resolving competing *edits*, and is handled differently.
@@ -498,7 +538,7 @@ the same conflict independently cannot diverge. Losing edits are preserved, neve
 discarded. Clinician-over-AI resolves silently; two humans disagreeing still
 picks a winner but is flagged for review.
 
-### 4.5 Patient-facing maker-checker firewall
+### 8.5 Patient-facing maker-checker firewall
 
 Patient-facing generation is the highest-severity class in the system, and the
 only path where AI output cannot reach its audience unaccompanied. Three gates,
@@ -544,7 +584,7 @@ as highlighted chips beside the draft rather than a generic failure, so the
 clinician is pointed at `100000000mg` instead of re-reading their own message
 looking for what upset it.
 
-### 4.6 Feedback loop: exposure bias and fatigue
+### 8.6 Feedback loop: exposure bias and fatigue
 
 Both hazards are structural, and neither is fixed by better prompting.
 
@@ -573,7 +613,7 @@ another clinic's scores; there is a test for exactly that.
 
 ---
 
-### 4.7 Ambient voice capture
+### 8.7 Ambient voice capture
 
 The newest surface, and the one with a cost model attached. ElevenLabs Scribe v2
 is metered against a 10,000-credit budget, so the design constraint was not
@@ -642,7 +682,7 @@ Whisper-style per-segment confidence feeds the ensemble term in §4.3, which is
 otherwise the weakest input; segment timestamps make provenance audio-anchored
 rather than text-anchored.
 
-### 4.8 Revision history and revert
+### 8.8 Revision history and revert
 
 `note_versions.content_snapshot` is `jsonb` holding the **actual note text** at
 that point in time, plus a `sections` breakdown:
@@ -671,7 +711,7 @@ test now compares three distinct states, asserts the target and current differ
 *before* reverting, rejects snapshots that read like changelog entries, and
 confirms the superseded state survives.
 
-## 5. Performance — the ≤300ms warm glance path
+## 9. Performance — the ≤300ms warm glance path
 
 **Decoupling, then measurement.** The page was a client component running a
 waterfall — session → care_note → (entries, comments, highlights) → profiles —
@@ -736,7 +776,7 @@ remove a safety-relevant item.
 
 ---
 
-## 6. Trade-offs and what I would do next
+## 10. Trade-offs and what I would do next
 
 **Extraction costs fluency.** Verbatim spans read less smoothly than a generated
 summary. Accepted deliberately: a clinician who cannot verify a claim in seconds
@@ -784,7 +824,7 @@ once live transcription is running.
 
 ---
 
-## 7. Verification
+## 11. Verification
 
 ```bash
 cd ai-service && .venv/bin/python -m pytest tests/ -v   # 429 passed

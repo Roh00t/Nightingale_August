@@ -275,7 +275,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   const conflictCount = conflicts.length;
 
   useEffect(() => {
+    // Contradiction detection is a care-team endpoint. Without this the effect
+    // fires for a patient and takes a 403 it can do nothing with — a wasted
+    // round trip on every patient page load, and a confusing line in the log.
     if (!token || entries.length === 0) return;
+    if (currentUser && currentUser.role === 'patient') return;
     let cancelled = false;
 
     (async () => {
@@ -315,7 +319,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     })();
 
     return () => { cancelled = true; };
-  }, [entries, token]);
+  }, [entries, token, currentUser]);
 
   const handleReviewConflicts = useCallback(() => {
     const first = conflicts[0];

@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from services.auth import CallerIdentity, require_caller
+from services.auth import CallerIdentity, require_caller, require_roles
 
 from services.redaction import cleanup_redaction_map, redact
 
@@ -98,7 +98,7 @@ class RedactResponse(BaseModel):
 )
 async def redact_text(
     request: RedactRequest,
-    caller: CallerIdentity = Depends(require_caller),
+    caller: CallerIdentity = Depends(require_roles("clinician", "staff", "admin")),
 ) -> RedactResponse:
     """Redact PHI from the provided text."""
     logger.info("Redact request received, text length=%d", len(request.text))

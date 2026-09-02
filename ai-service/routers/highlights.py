@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from services.auth import CallerIdentity, require_caller
+from services.auth import CallerIdentity, require_caller, require_roles
 
 from services.importance import batch_score
 from services.safety.confidence import apply_abstention, assess_confidence
@@ -143,7 +143,7 @@ class HighlightsResponse(BaseModel):
 )
 async def highlights(
     request: HighlightsRequest,
-    caller: CallerIdentity = Depends(require_caller),
+    caller: CallerIdentity = Depends(require_roles("clinician", "staff", "admin")),
 ) -> HighlightsResponse:
     """Extract and score clinical highlights from care note entries."""
     logger.info(

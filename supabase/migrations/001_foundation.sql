@@ -612,6 +612,41 @@ CREATE POLICY "Clinicians can update assessments"
   );
 
 -- -------------------------------------------------------- interaction_log ---
+-- Server-side authority over what the learning loop reads.
+--
+-- The INSERT policy is WITH CHECK (user_id = auth.uid()) and nothing more, so a
+-- caller could otherwise choose action_type, target_metadata and created_at
+-- freely — and those rows feed services/importance.py. The absolute floor keeps
+-- an allergy from being buried regardless, so the damage was bounded to noise,
+-- but the loop should not be writable by its own subjects.
+CREATE OR REPLACE FUNCTION stamp_interaction_log()
+RETURNS trigger AS $$
+DECLARE
+  v_role text;
+BEGIN
+  IF current_user NOT IN ('authenticated', 'anon') THEN
+    RETURN NEW;
+  END IF;
+  NEW.user_id    := auth.uid();
+  NEW.created_at := now();
+  SELECT role INTO v_role FROM public.profiles WHERE id = auth.uid();
+  NEW.user_role := COALESCE(v_role, 'unknown');
+  IF NEW.target_metadata IS NOT NULL THEN
+    NEW.target_metadata := jsonb_strip_nulls(jsonb_build_object(
+      'keywords',   NEW.target_metadata -> 'keywords',
+      'topic',      NEW.target_metadata -> 'topic',
+      'risk_level', NEW.target_metadata -> 'risk_level'
+    ));
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS trg_stamp_interaction_log ON interaction_log;
+CREATE TRIGGER trg_stamp_interaction_log
+  BEFORE INSERT ON interaction_log
+  FOR EACH ROW EXECUTE FUNCTION stamp_interaction_log();
+
 CREATE POLICY "Users can view own interactions"
   ON interaction_log FOR SELECT
   USING (user_id = auth.uid());

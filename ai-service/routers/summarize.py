@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from services.auth import CallerIdentity, require_caller
+from services.auth import CallerIdentity, require_caller, require_roles
 
 from services.llm import generate_summary
 from services.redaction import cleanup_redaction_map, de_redact, redact
@@ -106,7 +106,7 @@ class SummarizeResponse(BaseModel):
 )
 async def summarize(
     request: SummarizeRequest,
-    caller: CallerIdentity = Depends(require_caller),
+    caller: CallerIdentity = Depends(require_roles("clinician", "staff", "admin")),
 ) -> SummarizeResponse:
     """Generate a clinical summary from care note timeline entries."""
     logger.info(

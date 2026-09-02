@@ -12,6 +12,8 @@ import hashlib
 import hmac
 import logging
 import os
+import time
+from collections import OrderedDict
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -135,6 +137,35 @@ async def unresolved(
     return {"count": len(rows), "deliveries": rows}
 
 
+# Replay idempotency.
+#
+# Assessment §2.6: `update_id` was parsed and never used, so a captured callback
+# could be replayed indefinitely. The impact was low, but *incidentally* — status
+# transitions are monotonic and access tokens are single-use, so a replay
+# happened to be a no-op. Both of those could be relaxed by a future change
+# without anyone noticing the replay window reopening.
+#
+# In-process, deliberately. A replayed update is only harmful within the window
+# where its side effect is still repeatable, and a bounded ring covers that
+# without a schema change 36 hours before a deadline. It does NOT survive a
+# restart or span replicas; the monotonic status machine remains the real
+# guarantee, and this is the explicit second barrier.
+_SEEN_UPDATE_IDS: "OrderedDict[int, float]" = OrderedDict()
+_SEEN_LIMIT = 10_000
+
+
+def _already_processed(update_id: int | None) -> bool:
+    """True if this update was seen before. Unbounded growth is capped by FIFO."""
+    if update_id is None:
+        return False
+    if update_id in _SEEN_UPDATE_IDS:
+        return True
+    _SEEN_UPDATE_IDS[update_id] = time.time()
+    while len(_SEEN_UPDATE_IDS) > _SEEN_LIMIT:
+        _SEEN_UPDATE_IDS.popitem(last=False)
+    return False
+
+
 class TelegramUpdate(BaseModel):
     """
     One Telegram update. Deliberately permissive.
@@ -173,6 +204,12 @@ async def telegram_webhook(
         payload = await request.json()
     except Exception:
         return {"result": "ignored_unparseable"}
+
+    # Replay check runs after authentication and before any side effect, so a
+    # replayed update costs a dictionary lookup and nothing else.
+    if isinstance(payload, dict) and _already_processed(payload.get("update_id")):
+        logger.info("Ignoring replayed Telegram update_id=%s", payload.get("update_id"))
+        return {"result": "duplicate"}
 
     from services.telegram import parse_start_command
 

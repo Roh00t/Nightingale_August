@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from services.auth import CallerIdentity, require_caller
+from services.auth import CallerIdentity, require_caller, require_roles
 from services.safety.clinical_conflict import detect_conflicts
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ class ConflictsResponse(BaseModel):
 )
 async def conflicts(
     request: ConflictsRequest,
-    caller: CallerIdentity = Depends(require_caller),
+    caller: CallerIdentity = Depends(require_roles("clinician", "staff", "admin")),
 ) -> ConflictsResponse:
     try:
         detected = detect_conflicts(

@@ -195,6 +195,14 @@ VERCEL_PREVIEW_ORIGIN_REGEX = (
     r"https://nightingale-august-frontend-6ktv(-[a-z0-9-]+)?\.vercel\.app"
 )
 
+# Rate limiting runs BEFORE CORS in the stack (added after, so it wraps outside
+# — Starlette applies middleware in reverse order of registration). A 429 must
+# still carry CORS headers or the browser reports it as a CORS failure and the
+# client cannot tell it was throttled.
+from services.rate_limit import rate_limit_middleware  # noqa: E402
+
+app.middleware("http")(rate_limit_middleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
