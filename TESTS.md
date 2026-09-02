@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**429 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**442 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root

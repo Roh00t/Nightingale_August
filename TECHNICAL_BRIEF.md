@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**429 automated tests, runnable offline with no credentials.**
+**442 automated tests, runnable offline with no credentials.**
 
 **Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
 — PHI redacted before egress, access enforced at the database, audit records
@@ -827,7 +827,7 @@ once live transcription is running.
 ## 11. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 429 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 442 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs
@@ -899,3 +899,128 @@ fix.
 shipped looking correct: `\b\d+\b` does not match `100` in `100mg`, so a
 hallucinated dose passed the patient gate; and negation was checked only before a
 finding, so `"anaphylaxis ruled out"` escalated to critical.
+
+---
+
+## 12. Security triage and declared safety boundaries
+
+*(Requested as "Section 8"; §8 is already the clinical safety layer, so this
+appends as §12.)*
+
+An adversarial audit of the finished build — `OVERNIGHT_VULNERABILITY_ASSESSMENT.md`
+— found one critical vulnerability and nine lower-severity items. This section
+records the triage, and then states plainly which capabilities this system does
+**not** have, because in a clinical tool an undeclared boundary is more dangerous
+than a missing feature.
+
+### 12.1 The zero-day: patient privilege escalation
+
+`profiles` carried `FOR UPDATE USING (id = auth.uid())` with no `WITH CHECK` and
+no column restriction. A row a patient may update was therefore a row they may
+update *any column of* — including `role`, which every other policy keys on:
+
+```sql
+UPDATE profiles SET role='clinician' WHERE id = auth.uid();
+```
+
+Measured against a seeded cluster, one statement, same JWT:
+
+| Table | before | after |
+|---|---|---|
+| `care_note_assessments` | 0 | 1 |
+| `timeline_entries` (internal) | 0 | 7 |
+| `comments` | 0 | 3 |
+| `note_versions` | 0 | 4 |
+
+This defeated the `care_note_assessments` split, the `visibility='internal'`
+exclusion, and the patient-facing gate at once — every patient-isolation control
+in the system, bypassed by one call that never touched a route handler.
+
+**Why the test suite did not catch it.** Every RBAC test asserted what a *patient*
+may read. None asserted that a patient cannot *stop being* a patient. A green
+suite is evidence about the paths you thought to test, and this is the clearest
+example in the build of that not being the same as security.
+
+**Fix:** a `BEFORE UPDATE` trigger pinning `role` and `clinic_id`
+(`supabase/migrations/20260902_pin_profile_identity.sql`), restricted to
+`current_user IN ('authenticated','anon')` — the only two roles PostgREST maps a
+JWT to. The first draft tested `current_setting('role') = 'service_role'`, which
+reads `'none'` on the owner connection and would have blocked seeding while
+appearing correct; a test now covers exactly that case.
+
+### 12.2 Secondary remediation
+
+| Finding | Fix |
+|---|---|
+| Five AI endpoints admitted `patient` | Tightened to clinician/staff/admin; drafting matched to who may send |
+| No rate limiting | In-process sliding window; tightest on the unauthenticated surface |
+| Four tables without a `RESTRICTIVE` tenant policy | Added — the second barrier, not the first |
+| `interaction_log` client-forgeable | `BEFORE INSERT` trigger stamps identity, role and time server-side |
+| Webhook replay unguarded | Bounded `update_id` idempotency check |
+| Event-loop blocking on sign-in | `httpx.AsyncClient`, awaited |
+| No React error boundary | `app/error.tsx`, `app/global-error.tsx` |
+| `window.prompt` retraction | Reuses `DeferReasonDialog` |
+
+Test suite grew **420 → 442**. Every fix is mutation-checked: the fix is
+deliberately re-broken to confirm a test notices.
+
+**One limitation stated rather than buried.** The rate limiter is in-process. On a
+single replica it is a real bound; on N replicas an attacker gets N times the
+allowance. A limiter that silently scales with replica count is worse than none,
+because it is believed.
+
+### 12.3 Declared boundaries — what this system does not do
+
+These are omissions by decision, not by oversight. Each was scoped and rejected
+for the same reason: **a rushed clinical feature is worse than a documented
+absence**, because clinicians calibrate their trust to what they believe the
+system does.
+
+**Streaming real-consult audio — NOT BUILT.** Transcription is whole-file, after
+the consult ends. An allergy mentioned at minute two is known at minute twenty.
+This is an architectural stance, not a bug: streaming ASR needs partial-hypothesis
+handling, and a partial transcript that says "no known allergies" before the
+correction arrives is a worse artefact than a late-but-complete one.
+
+**Medication and dosage confirmation — NOT BUILT.** Grounding proves a dose was
+*said*. It does not prove the dose is *safe*. There is no formulary lookup, no
+interaction check, no dose-range validation. The boundary is deliberate and
+absolute: **the AI is not trusted to evaluate clinical safety.** It can show a
+clinician what was said and where it came from; judging whether 100mg of
+lisinopril is appropriate for this patient is the clinician's, and building a
+half-formulary would invite exactly the delegation this design refuses.
+
+**Audience-specific readability — NOT BUILT.** Patient-facing text is heavily
+*gated* — grounding, prohibited speech acts, named human approval — but never
+*rewritten*. A reading-level transform is a generative rewrite of clinical
+content, and every rewrite is an opportunity to alter meaning: "take one tablet
+twice daily" simplified into "take two tablets daily" is fluent, friendlier, and
+wrong. The clinician's words go to the patient unchanged, or they do not go.
+
+**Speaker attribution — PARTIAL.** ElevenLabs Scribe v2 diarizes, and the
+transcript carries speaker labels through `Segment.speaker`. What is missing is
+frontend UX: no speaker-identity mapping ("Speaker 1" is not resolved to
+"Dr Tan"), no per-speaker filtering, no correction affordance. The data is
+present and unexploited.
+
+**Self-learning — PARTIAL, and the gap is the interesting part.** The loop is
+clinic-scoped, bounded by an absolute floor (`critical` ≥ 0.90), and resistant to
+alert fatigue: forty dismissals cannot bury an anaphylaxis flag. What it lacks is
+**exposure-bias correction**. It only ever scores what it surfaced, so it grows
+more confident about what it already believed and never learns that something it
+suppressed deserved promotion. Correcting it needs deliberate random sampling of
+suppressed items — cheap to describe, and not something to introduce untested
+into a ranking that clinicians rely on. The `interaction_log` forgery fix in
+§12.2 at least means the data feeding the loop is now server-asserted.
+
+### 12.4 What would break first, today
+
+Ranked honestly:
+
+1. **The escalation, until the migration is applied to production.** The fix is
+   committed; a migration in the repository protects nobody.
+2. **Rate limiting under multiple replicas**, per the caveat above.
+3. **`PatientWorkspace.tsx` at ~1800 lines.** Two production defects already
+   traced to its size — the `glance_cache` write-back leak and two drifting URL
+   builders. It is a known fault line, deliberately left alone this close to a
+   deadline rather than refactored under time pressure.
