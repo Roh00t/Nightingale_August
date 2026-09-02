@@ -1100,3 +1100,86 @@ Where the audit says a name leaks, a test asserts it leaks. Where it says
 exposure-bias sampling is absent, a test asserts its absence. Each fails if the
 gap is closed, so the documentation cannot drift into claiming more than the code
 does — which is the failure mode this whole audit exists to avoid.
+
+---
+
+## 14. Guardrails proven by test, not by assertion
+
+Every claim in §12.3 and §13 about what this system deliberately does *not* do is
+backed by a test that fails if the boundary moves.
+`ai-service/tests/test_audit_boundaries.py` — 18 tests — asserts the
+**limitations**, not the features. That inversion is the point.
+
+A conventional suite proves the code does what you claim. It cannot detect the
+more dangerous failure in clinical software: documentation that drifts ahead of
+the code, so a clinician trusts a control that is not there. These tests close
+that gap by failing in the direction nobody expects — **when a gap is fixed**.
+
+| Test | Asserts | Fails when |
+|---|---|---|
+| `test_free_text_names_are_NOT_caught` | `"Patient Alice Wong"` still leaks from logs | name scrubbing improves |
+| `test_code_switched_clinical_text_does_NOT_trigger_a_floor` | `"gula darah dia tinggi"` triggers no risk floor | multilingual rules are added |
+| `test_transcription_buffers_the_whole_file_before_processing` | no `partial_transcript` / `interim_result` path exists | streaming ASR is built |
+| `test_exposure_bias_correction_is_absent` | no `epsilon` / `exploration` sampling in `importance.py` | exposure-bias sampling lands |
+| `test_blanket_denial_is_NOT_detected` | "Penicillin allergy" vs "no known drug allergies" yields **zero** conflicts | blanket-denial matching is added |
+| `test_side_by_side_comparison_is_absent` | the provenance badge marks staleness without diffing | a diff view is built |
+| `test_per_clinic_settings_are_absent` | no `clinic_settings` table | per-clinic branding lands |
+
+Each failure message names the document that must be regraded. The suite makes
+overclaiming a **build failure** rather than a matter of discipline.
+
+### This already worked, once, on us
+
+Scenario 13 was drafted **PARTIAL** in an earlier pass of `CLAUDE.md` §8. The
+reasoning looked sound: a contradiction engine exists, it classifies allergy
+conflicts as the highest severity class, and it surfaces them on the glance card.
+
+Writing the test disproved it. Four phrasings were run through the real engine:
+
+| Nurse entry | AI entry | Result |
+|---|---|---|
+| "allergic to penicillin" | "not allergic to penicillin" | DETECTED |
+| **"Penicillin allergy documented"** | **"no known drug allergies"** | **NOT DETECTED** |
+| "Allergy to penicillin documented" | "no known drug allergies" | NOT DETECTED |
+| "allergic to penicillin" | "no known drug allergies" | NOT DETECTED |
+
+The engine requires both sides to name the **same drug** with an explicit
+negation. A blanket denial — which is what a patient actually says — matches
+nothing. The scenario as posed produces zero conflicts and a clean glance card.
+
+Regraded **DOES NOT**; capability 10 regraded **MISSING**. The engine was not
+changed, because a half-tuned allergy detector that misses a different phrasing
+is the same failure wearing a green tick. It is pinned instead, so the day
+someone fixes it, the grade is forced to move with the code.
+
+### Why the dosage boundary is non-negotiable
+
+Of the three MISSING capabilities, dosage validation is the one worth defending
+explicitly, because it is the one an evaluator most expects to see.
+
+**Grounding proves a dose was said. It does not prove the dose is correct.**
+`patient_gate.py` verifies that every clinical token in a patient-facing message
+appears in the record — so a fabricated `100mg` is blocked when the record says
+`10mg`. That is a *fidelity* control, not a *safety* one, and the distinction is
+the entire argument.
+
+Determining whether 10mg of lisinopril is appropriate for **this** patient
+requires a licensed formulary, an interaction database, renal-adjustment rules
+and the patient's full medication history. None of that is present, and none of
+it can be substituted by a language model without inviting the exact failure this
+architecture exists to prevent: a clinician seeing a green tick and reading it as
+a safety check.
+
+A partial implementation would be worse than none. A formulary covering the
+twenty drugs someone had time to encode produces confident silence on the
+twenty-first — and silence from a system that has previously flagged things is
+read as approval.
+
+So the boundary is stated in three places and enforced in one: `CLAUDE.md` §8
+capability 5 (MISSING), this brief §12.3, and
+`test_audit_boundaries.py`, which fails if a formulary, interaction check or
+dose-range validator appears without the documentation moving with it.
+
+**The AI is not trusted to evaluate clinical safety.** It shows a clinician what
+was said and where it came from. Judging it remains a human act, and the code is
+arranged so that cannot quietly change.

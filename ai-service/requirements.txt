@@ -6,11 +6,21 @@ pydantic>=2.7.0
 pydantic-settings>=2.3.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
-# PHI redaction (Presidio + spaCy NER). The en_core_web_sm model is not a
-# pip dependency; install it with:  python -m spacy download en_core_web_sm
+# PHI redaction (Presidio + spaCy NER).
+#
+# en_core_web_sm is pinned as a wheel URL rather than left to a separate
+# `python -m spacy download` step. It is distributed outside PyPI, so
+# `pip install -r requirements.txt` would otherwise complete successfully and
+# leave the redaction engine unable to start — a fresh clone would boot, report
+# `redaction_engine: false` on /ready, and fail every PHI endpoint with no
+# obvious cause. Making it a declared dependency removes an out-of-band step
+# someone can forget.
+#
+# Version must track spacy: the 3.8.0 model requires spacy 3.8.x.
 presidio-analyzer>=2.2.360
 presidio-anonymizer>=2.2.360
-spacy>=3.8.0
+spacy>=3.8.0,<3.9.0
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # JWT verification for AI endpoint auth
 PyJWT>=2.8.0

@@ -397,221 +397,198 @@ because the dangerous property is that unsaved text looks saved.
 
 ---
 
-## Quick start
+## Running it locally
 
-### Prerequisites
+**This application is designed to run entirely on your machine.** The hosted
+deployment is secondary; everything below runs against a local Supabase stack
+with no cloud account and no credentials of ours.
 
-| | Version | Needed for |
+### Prerequisites — install these first
+
+| Requirement | Why | Check |
 |---|---|---|
-| Node | 20+ | frontend, collab server |
-| Python | 3.11+ | AI service |
-| PostgreSQL **client binaries** | 14+ | **the test suite**, which builds its own throwaway database — `brew install postgresql@14` |
-
-### 1. Install
+| **Docker Desktop** or **OrbStack**, running | The local Supabase stack runs in containers. Nothing else needs it. | `docker --version` |
+| **Supabase CLI** | Boots Postgres, Auth (GoTrue), PostgREST and Studio locally. | `supabase --version` |
+| **Node.js 20+** | Next.js 15 App Router. Verified on v24. | `node --version` |
+| **Python 3.11+** | AI service. Verified on 3.14. | `python3 --version` |
+| **PostgreSQL client tools** (`initdb`, `pg_ctl`) | *Tests only.* The suite builds its own throwaway cluster. | `brew install postgresql@14` |
 
 ```bash
-npm install                          # workspaces: frontend + collab-server
+# macOS
+brew install supabase/tap/supabase postgresql@14
+```
 
+> Docker must be **running**, not merely installed. `supabase start` fails with a
+> daemon-connection error otherwise, which reads like a CLI problem and is not.
+
+---
+
+### 1. Start the local control plane
+
+```bash
+supabase start
+```
+
+First run pulls several container images and takes a few minutes. It prints an
+API URL, an anon key and a service-role key — **you will paste those into `.env`
+in step 3.**
+
+| Service | Local port |
+|---|---|
+| API / PostgREST / Auth | `54321` |
+| PostgreSQL | `54322` |
+| Studio (browse the DB) | `54323` |
+
+`supabase start` applies everything in `supabase/migrations/` automatically, in
+filename order. That includes the privilege-escalation fix
+(`20260902_pin_profile_identity.sql`) and the tenant-isolation policies, so a
+local instance is not a weakened one.
+
+### 2. Install dependencies
+
+```bash
+npm install                              # workspaces: frontend + collab-server
+```
+
+```bash
 cd ai-service
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m spacy download en_core_web_sm   # PHI redaction model
-cd ..
+.venv/bin/pip install -r requirements.txt
 ```
 
-`en_core_web_sm` is not a pip dependency and must be downloaded explicitly. The
-AI service will not report ready without it.
-
-### 2. Run the tests — no configuration needed
-
-```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v
-```
-
-Expect **460 passed**. The suites build an ephemeral PostgreSQL cluster, apply
-`supabase/migrations/001_foundation.sql` verbatim, and seed both demo clinics.
-No cloud project, no Docker, no credentials, and no metered API calls.
-
-Full per-suite documentation is in **[TESTS.md](TESTS.md)**.
+> **On the spaCy model.** `en_core_web_sm` is distributed as a wheel outside
+> PyPI, so it is pinned by URL in `requirements.txt` rather than left to a
+> separate `python -m spacy download` step. Without that pin, `pip install`
+> completes successfully and the service starts with `redaction_engine: false` —
+> a PHI pipeline that silently is not running. It is a declared dependency
+> specifically so it cannot be forgotten.
 
 ### 3. Environment — two files, not one
 
-This trips people up. The repo-root `.env` is loaded explicitly by the AI
-service (`main.py`) and the collab server (`index.ts`). **Next.js reads env from
-its own project root**, so `frontend/.env.local` is required and independent.
+```bash
+cp .env.example .env                     # AI service + collab server
+```
+
+Paste the values `supabase start` printed:
 
 ```bash
-cp .env.demo .env        # then fill in the values below
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key from supabase start>
+SUPABASE_SERVICE_ROLE_KEY=<service_role key from supabase start>
+SUPABASE_JWT_SECRET=<JWT secret from supabase start>
 ```
 
-**`.env` (repo root)** — AI service and collab server:
+Then the frontend's own file — Next.js reads env from its project root, not the
+repo root:
 
-| Key | Needed for |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL` | everything |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | auth |
-| `SUPABASE_SERVICE_ROLE_KEY` | AI scribe ingestion, collab server, seeding |
-| `SUPABASE_JWT_JWK` *or* `SUPABASE_JWT_SECRET` | verifying JWTs on AI endpoints and the WebSocket |
-| `GROQ_API_KEY` | summarisation and highlight extraction |
-| `ELEVENLABS_API_KEY` + `ELEVENLABS_LIVE_ENABLED` | live voice transcription (**optional**, metered) |
-| `TEST_*_EMAIL` / `TEST_*_PASSWORD` | the latency harness |
-
-**`frontend/.env.local`** — Next.js, for local development:
-
-```
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...          # server-only; never NEXT_PUBLIC
+```bash
+cat > frontend/.env.local <<'EOF'
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
+SUPABASE_SERVICE_ROLE_KEY=<service_role key>
 NEXT_PUBLIC_AI_SERVICE_URL=http://localhost:8000
 NEXT_PUBLIC_COLLAB_URL=ws://localhost:1234
+EOF
 ```
 
-### Production environment
+`GROQ_API_KEY` is optional locally — see *Degradation* below.
 
-Three hosts, three sets of variables. They are not interchangeable.
-
-**Vercel** (frontend). `NEXT_PUBLIC_*` values are **inlined into the client
-bundle at build time**, so editing one in the dashboard changes nothing until you
-redeploy:
-
-| Key | Value |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | the Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the anon/publishable key |
-| `SUPABASE_SERVICE_ROLE_KEY` | server-only; used by `/api/patients` and patient-login |
-| `NEXT_PUBLIC_AI_SERVICE_URL` | `https://nightingaleaugust-3zme-production.up.railway.app` |
-| `NEXT_PUBLIC_COLLAB_URL` | omit in production — absent means the "Local Only" fallback |
-
-**Railway** (AI service):
-
-| Key | Needed for |
-|---|---|
-| `SUPABASE_URL` | Supabase REST base for scribe ingestion |
-| `SUPABASE_SERVICE_ROLE_KEY` | writing `author_role='system'` entries |
-| `SUPABASE_JWT_JWK` *or* `SUPABASE_JWT_SECRET` | **verifying JWTs — without it every endpoint returns 503** |
-| `GROQ_API_KEY` | summarisation and highlight extraction |
-| `ELEVENLABS_API_KEY` | ambient voice transcription |
-| `ELEVENLABS_LIVE_ENABLED` | `true` to spend credits; unset means mock transcripts |
-
-Readiness is self-reporting — `GET /ready` returns each check by name:
+### 4. Seed both clinics
 
 ```bash
-curl -s https://nightingaleaugust-3zme-production.up.railway.app/ready
+./scripts/seed.sh
 ```
 
-```json
-{"status":"ready","checks":{"groq_api_key":true,"supabase_url":true,
- "supabase_service_key":true,"jwt_verification":true,"redaction_engine":true}}
-```
-
-`jwt_verification: false` is the one that silently breaks every AI feature: the
-service still reports `ready` (redaction and Groq are the critical checks) and
-still answers `/health`, but every authenticated call returns
-`503 Authentication is not configured on this service`. It fails closed, which is
-the right posture — but check this field, not just the status string.
-
-**Supabase** (database) needs no application variables. Apply
-`supabase/fix_live_grants.sql` once to an existing deployment; a fresh project
-gets everything from `supabase/migrations/001_foundation.sql`.
-
-> **Three env traps, each of which cost real debugging time:**
->
-> **A blank value is worse than a missing one.** `os.getenv(key, default)`
-> returns `""` for `KEY=`, defeating every fallback. Comment the line out instead.
->
-> **`SUPABASE_JWT_JWK` must be a single, valid, properly escaped JSON object.**
-> This is the highest-frequency deployment failure in this project. The variable
-> holds a JWK Set — `{"keys":[{"kty":"EC","alg":"ES256","kid":"...",...}]}` — and
-> anything that mangles it produces the same symptom: **every AI endpoint returns
-> `503 Authentication is not configured on this service`**, while `/health`
-> continues to answer `200` and `/ready` still reports `status: ready`.
->
-> That combination is what makes it expensive. The service looks alive from every
-> angle a load balancer checks, so the failure presents as "the AI is broken"
-> rather than "one variable is malformed". Diagnose it by reading the *field*,
-> not the status line:
->
-> ```bash
-> curl -s https://<your-railway-host>/ready
-> # {"status":"ready","checks":{...,"jwt_verification":false,...}}
-> #                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this one
-> ```
->
-> `jwt_verification: false` means the value is absent or unparseable. The three
-> ways it gets mangled:
->
-> | Cause | What happens |
-> |---|---|
-> | `source .env` before starting | The shell strips the outer quotes, exporting `{keys:[...]}`. A real env var beats the `.env` file, so the service reads the corrupt one. **Never source it** — each service parses `.env` itself. |
-> | Pasting into a dashboard field with newlines | Railway/Vercel preserve the newline; `json.loads` fails. Paste it as one line. |
-> | Double-escaping | `\"` inside an already-quoted dashboard value yields `\\"` in the process. Paste raw JSON, not a shell-escaped string. |
->
-> Verify locally before deploying:
->
-> ```bash
-> python3 -c "import json,os; json.loads(os.environ['SUPABASE_JWT_JWK']); print('valid')"
-> ```
->
-> Fetch a fresh copy from `https://<project>.supabase.co/auth/v1/.well-known/jwks.json`.
-> `SUPABASE_JWT_SECRET` (symmetric HS256) is accepted as a fallback, but the
-> project publishes ES256 keys and Supabase is migrating off symmetric secrets —
-> prefer the JWK.
-
-### 4. Database
-
-Apply `supabase/migrations/001_foundation.sql` — one file expressing the
-intended final state, replacing a historical 001–014 chain in which later
-migrations silently reverted earlier ones.
-
-If the schema is already deployed but PostgREST returns
-`42501 permission denied for table`, that deployment predates the grants block.
-Run **`supabase/fix_live_grants.sql`** in the Supabase SQL Editor. It is
-idempotent, adds the clinical-safety columns, and creates `care_note_assessments`
-— backfilling the clinical assessment out of `glance_cache` before stripping it,
-so a part-way failure cannot destroy it. Audit the result with
-**`supabase/verify_grants.sql`**, which should show `true` across all nine
-tables.
-
-```bash
-./scripts/seed.sh      # creates 8 auth users, seeds both clinics
-```
+Creates 8 auth users across two clinics with password `demo-password-123`, and
+seeds care notes, timeline entries, highlights and comments. Reads
+`NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from the root `.env`.
 
 ### 5. Run
 
 ```bash
-npm run dev            # frontend :3000, collab :1234, AI :8000
+npm run dev
 ```
 
-> **`npm run dev:ai` invokes a bare `uvicorn`**, which resolves to a system
-> Python without FastAPI. Either activate the venv first, or start the AI
-> service directly:
->
-> ```bash
-> cd ai-service && .venv/bin/uvicorn main:app --reload --port 8000
-> ```
+Frontend `:3000` · collab `:1234` · AI service `:8000`. Open
+**http://localhost:3000** and sign in as `clinician@nightingale.demo` /
+`demo-password-123`.
 
-Without `SUPABASE_JWT_SECRET`/`SUPABASE_JWT_JWK` the collab server exits and the
-editor degrades to **"Local Only"** — an amber indicator, with edits saving
-directly to Supabase. This is a designed fallback, not a failure.
+Confirm the AI service is healthy:
+
+```bash
+curl -s http://localhost:8000/ready
+```
+
+Read the individual checks, not `status` — the service reports `ready` when Groq
+and redaction are healthy, so `jwt_verification: false` passes the summary line
+while breaking every authenticated endpoint.
+
+### 6. Tests
+
+```bash
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 460 passed
+```
+
+```bash
+.venv/bin/python -m pytest tests/test_audit_boundaries.py -v
+```
+
+The suite needs **no credentials and no running Supabase** — it builds its own
+throwaway PostgreSQL cluster from `supabase/migrations/001_foundation.sql` and
+runs as a non-superuser, because a superuser bypasses RLS and every
+access-control assertion would pass while proving nothing.
+
+```bash
+npm run typecheck && cd frontend && npx next build
+```
+
+---
 
 ### Demo accounts
-<a id="demo-accounts"></a>
 
-All use `demo-password-123` (written by `scripts/seed.sh`, which is
-authoritative).
+All seeded by `./scripts/seed.sh`, password `demo-password-123`.
 
-| Clinic | Role | Email |
+| Email | Role | Clinic |
 |---|---|---|
-| Nightingale Family | Clinician | `clinician@nightingale.demo` |
-| Nightingale Family | Staff | `staff@nightingale.demo` |
-| Nightingale Family | Patient | `patient@nightingale.demo` |
-| Nightingale Family | Admin | `admin@nightingale.demo` |
-| Sunrise Medical | Clinician | `dr.miller@sunrise.demo` |
-| Sunrise Medical | Staff | `emma.wilson@sunrise.demo` |
-| Sunrise Medical | Patient | `robert.lee@sunrise.demo` |
-| Sunrise Medical | Admin | `michael.brown@sunrise.demo` |
+| `clinician@nightingale.demo` | clinician | Nightingale Family |
+| `staff@nightingale.demo` | staff | Nightingale Family |
+| `patient@nightingale.demo` | patient | Nightingale Family |
+| `admin@nightingale.demo` | admin | Nightingale Family |
+| `dr.miller@sunrise.demo` | clinician | Sunrise |
+| `emma.wilson@sunrise.demo` | staff | Sunrise |
+| `robert.lee@sunrise.demo` | patient | Sunrise |
+| `michael.brown@sunrise.demo` | admin | Sunrise |
 
-Two clinics exist so cross-tenant denial is testable rather than asserted.
+Two clinics exist so tenant isolation is demonstrable rather than asserted: sign
+in as `dr.miller@sunrise.demo` and the Nightingale patient is not visible, at the
+database level.
+
+---
+
+### Degradation — what happens when things are not configured
+
+Verified by cloning this repository to an empty directory and running it with
+**no `.env` at all**:
+
+| Missing | Behaviour | Verified |
+|---|---|---|
+| Every environment variable | `next build` compiles; `next dev` serves `/login` with **200** and zero runtime errors | ✅ measured on a clean clone |
+| `GROQ_API_KEY` | AI service boots; `/ready` reports `groq_api_key: false`; AI calls return a clear error and the UI shows **"Offline Mode (Rule-Derived)"** with rule-derived findings. The record is unaffected — it comes from the database, not the model. | ✅ |
+| `ELEVENLABS_API_KEY` | Voice capture uses a deterministic mock transcript. Live transcription needs **two** switches (`ELEVENLABS_API_KEY` *and* `ELEVENLABS_LIVE_ENABLED=true`) so it cannot start spending credits by accident. | ✅ |
+| `MESSAGING_PROVIDER` | No provider. Deliveries stay `queued` and render as *not confirmed* — the honest state. There is deliberately no default provider. | ✅ |
+| `TELEGRAM_BOT_TOKEN` | Dispatch refuses rather than silently no-opping. | ✅ |
+| `OTP_PEPPER` | OTP issuance **refuses** rather than storing unpeppered hashes. | ✅ |
+| Collab server not running | Editor waits 5s, shows an amber **"Local Only"** badge, and persists edits directly to Supabase. Work is saved; live cursors are not available. | ✅ |
+
+**Nothing in that table is a crash.** Every missing credential produces either a
+labelled degraded state or an explicit refusal. That is deliberate: a clinical
+tool that dies on a missing key during a consult is worse than one that says what
+it cannot do.
+
+> **Never `source .env`.** `SUPABASE_JWT_JWK` holds JSON; the shell strips its
+> quotes, and a real environment variable beats the file — every AI endpoint then
+> returns 503. Each service parses `.env` itself.
 
 ---
 
