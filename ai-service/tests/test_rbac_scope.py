@@ -558,3 +558,113 @@ class TestGlanceCacheCannotCarryTheAssessment:
         assert rows
         for row in rows:
             assert not (row["glance_cache"] or {}).get("top_items")
+
+
+class TestPatientCannotEscalateTheirOwnRole:
+    """
+    The CRITICAL finding from OVERNIGHT_VULNERABILITY_ASSESSMENT.md §2.1.
+
+    `"Users can update their own profile"` is USING (id = auth.uid()) with no
+    column restriction, so a row a patient may update was a row they may update
+    ANY column of — including `role`, which every other policy keys on. One
+    statement took a patient from zero rows to the entire internal record:
+
+        UPDATE profiles SET role='clinician' WHERE id = auth.uid();
+
+    Measured before the fix: care_note_assessments 0 -> 1, internal
+    timeline_entries 0 -> 7, comments 0 -> 3, note_versions 0 -> 4.
+
+    Nothing in this file caught it, and the reason is worth keeping in view: every
+    other test here asserts what a *patient* may read. None asserted that a
+    patient cannot stop being a patient.
+    """
+
+    async def test_patient_cannot_change_their_own_role(self, patient_client, user_ids):
+        with pytest.raises(Exception) as exc:
+            patient_client.table("profiles").update({"role": "clinician"}).eq(
+                "id", user_ids["patient"]
+            ).execute()
+        # Refused loudly, not silently reverted: a silent pin would let a UI
+        # report success for a change that did not happen.
+        assert "role may not be changed" in str(exc.value).lower() or "insufficient" in str(exc.value).lower()
+
+    async def test_role_is_unchanged_in_the_database_after_the_attempt(
+        self, patient_client, service_client, user_ids
+    ):
+        """The refusal must also not have partially applied."""
+        try:
+            patient_client.table("profiles").update({"role": "admin"}).eq(
+                "id", user_ids["patient"]
+            ).execute()
+        except Exception:
+            pass
+        row = (
+            service_client.table("profiles").select("role").eq("id", user_ids["patient"]).single().execute()
+        ).data
+        assert row["role"] == "patient"
+
+    async def test_escalation_payoff_stays_unreachable(self, patient_client, user_ids):
+        """
+        The assertion that actually matters. Even if some future change let the
+        UPDATE through, the patient must still see nothing — so this checks the
+        consequence, not just the mechanism.
+        """
+        try:
+            patient_client.table("profiles").update({"role": "clinician"}).eq(
+                "id", user_ids["patient"]
+            ).execute()
+        except Exception:
+            pass
+
+        assert patient_client.table("care_note_assessments").select("*").execute().data == []
+        internal = (
+            patient_client.table("timeline_entries")
+            .select("id").eq("visibility", "internal").execute()
+        ).data
+        assert internal == []
+        assert patient_client.table("comments").select("*").execute().data == []
+        assert patient_client.table("note_versions").select("*").execute().data == []
+
+    async def test_patient_cannot_move_themselves_to_another_clinic(
+        self, patient_client, user_ids, sunrise_care_note_id
+    ):
+        """
+        The other half of the identity pin. clinic_id was already blocked by the
+        inherited WITH CHECK, but that is incidental — this asserts it directly so
+        a policy rewrite cannot quietly remove it.
+        """
+        with pytest.raises(Exception):
+            patient_client.table("profiles").update(
+                {"clinic_id": "c0000000-0000-0000-0000-000000000002"}
+            ).eq("id", user_ids["patient"]).execute()
+
+    async def test_ordinary_profile_edits_still_work(self, patient_client, user_ids):
+        """
+        The control. Pinning two columns must not have made the profile
+        read-only — a patient correcting their own display name is legitimate,
+        and a trigger that blocked it would be a different outage.
+        """
+        rows = (
+            patient_client.table("profiles")
+            .update({"display_name": "Alice W."})
+            .eq("id", user_ids["patient"])
+            .execute()
+        ).data
+        assert rows, "a patient can no longer edit their own profile at all"
+        assert rows[0]["display_name"] == "Alice W."
+
+    async def test_service_role_can_still_reassign(self, service_client, user_ids):
+        """
+        Provisioning and admin re-assignment must keep working. The first draft of
+        this trigger tested current_setting('role')='service_role', which reads
+        'none' on the owner connection and would have blocked seeding while
+        looking correct.
+        """
+        rows = (
+            service_client.table("profiles")
+            .update({"role": "staff"}).eq("id", user_ids["patient"]).execute()
+        ).data
+        assert rows and rows[0]["role"] == "staff"
+        service_client.table("profiles").update({"role": "patient"}).eq(
+            "id", user_ids["patient"]
+        ).execute()

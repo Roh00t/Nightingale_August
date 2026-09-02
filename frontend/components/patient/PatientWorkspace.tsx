@@ -92,6 +92,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     () => (conflictsDegraded ? deriveOfflineFindings(entries) : []),
     [conflictsDegraded, entries]
   );
+  /** Entry awaiting a withdrawal reason. Null when the dialog is closed. */
+  const [retractTarget, setRetractTarget] = useState<string | null>(null);
+
   const [gateBlock, setGateBlock] = useState<{
     verdict: string;
     message: string;
@@ -783,19 +786,27 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * The reason is required and shown to the patient verbatim, so it is prompted
    * for rather than defaulted — a generic "withdrawn" alarms without informing.
    */
-  const handleRetractMessage = useCallback(async (entryId: string) => {
+  /**
+   * Step 1: record which message is being withdrawn. The reason is collected by
+   * DeferReasonDialog, not window.prompt.
+   *
+   * window.prompt was the wrong primitive here for the same reason it was wrong
+   * for deferrals: browsers suppress it after repeated use, and a suppressed
+   * prompt returns null — which this handler could not distinguish from the
+   * clinician pressing Cancel. The second retraction in a session would have
+   * silently done nothing while looking like a deliberate abort. See
+   * DeferReasonDialog.tsx, which already exists for exactly this.
+   */
+  const handleRetractMessage = useCallback((entryId: string) => {
     if (!careNote || !currentUser) return;
+    setRetractTarget(entryId);
+  }, [careNote, currentUser]);
 
-    const reason = window.prompt(
-      'Why is this message being withdrawn?\n\n' +
-      'The patient sees this text, so write it for them — e.g. "The dose in the ' +
-      'previous message was incorrect."'
-    );
-    if (reason === null) return;
-    if (reason.trim().length < 10) {
-      toast.error('Give the patient a reason of at least 10 characters.');
-      return;
-    }
+  /** Step 2: the dialog supplied a validated reason. Perform the retraction. */
+  const confirmRetraction = useCallback(async (reason: string) => {
+    const entryId = retractTarget;
+    if (!careNote || !currentUser || !entryId) return;
+    setRetractTarget(null);
 
     try {
       await callAI<{ retracted_entry_id: string; notice_entry_id: string }>(
@@ -822,7 +833,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           : 'Could not withdraw the message.'
       );
     }
-  }, [careNote, currentUser, supabase, token]);
+  }, [careNote, currentUser, supabase, token, retractTarget]);
 
   /**
    * Send a patient-facing message — through the maker-checker gate, never around it.
@@ -1427,6 +1438,20 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
         snippet={deferTarget?.content_snippet}
         onCancel={() => setDeferTarget(null)}
         onConfirm={confirmDefer}
+      />
+
+      {/* Withdrawal reason. Reuses the deferral dialog rather than a second
+          implementation: it already enforces a minimum length, clears between
+          uses, and — unlike window.prompt — cannot be suppressed by the browser
+          into a silent no-op. The reason is shown to the patient verbatim. */}
+      <DeferReasonDialog
+        open={retractTarget !== null}
+        riskLevel="critical"
+        snippet={
+          entries.find((e) => e.id === retractTarget)?.content_text?.slice(0, 160)
+        }
+        onCancel={() => setRetractTarget(null)}
+        onConfirm={confirmRetraction}
       />
       {/* Draft message panel */}
       {showMessageDraft && (

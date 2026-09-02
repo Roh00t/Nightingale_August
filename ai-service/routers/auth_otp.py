@@ -157,7 +157,7 @@ async def verify_otp(request: VerifyOTPRequest) -> VerifyOTPResponse:
         raise HTTPException(status_code=401, detail="That code is not valid. Request a new one.")
 
     try:
-        session = mint_session(
+        session = await mint_session(
             profile_id=profile["id"], phone=request.phone, role=profile["role"]
         )
     except SessionMintError as exc:

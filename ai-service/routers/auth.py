@@ -69,7 +69,7 @@ async def redeem_access_token(request: RedeemTokenRequest) -> RedeemTokenRespons
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
-        session = mint_session(
+        session = await mint_session(
             profile_id=profile["id"],
             phone=profile.get("phone_e164") or "",
             role=profile["role"],

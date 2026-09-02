@@ -71,6 +71,18 @@ class SessionMintError(RuntimeError):
     """Session could not be created. Never carries provider detail to the caller."""
 
 
+# Async throughout. These are called from async FastAPI endpoints, and the
+# synchronous httpx.Client they used before blocked the event loop for the
+# duration of two 20-second requests — up to 40 seconds during which every other
+# request, including /health, queued behind one sign-in. Under a clinic's morning
+# login rush that serialises the whole service.
+#
+# Refactored to AsyncClient rather than wrapped in run_in_threadpool: these are
+# pure network I/O with no CPU-bound or thread-affine work, so async is the shape
+# that actually fits. A threadpool would have hidden the blocking rather than
+# removed it.
+
+
 @dataclass
 class MintedSession:
     access_token: str
@@ -109,7 +121,7 @@ def _base_url() -> str:
     return url.rstrip("/")
 
 
-def ensure_auth_user(*, profile_id: str, phone: str) -> str:
+async def ensure_auth_user(*, profile_id: str, phone: str) -> str:
     """
     Make sure an `auth.users` row exists for this profile, and return its id.
 
@@ -124,8 +136,8 @@ def ensure_auth_user(*, profile_id: str, phone: str) -> str:
     email = sentinel_email(profile_id)
     base, headers = _base_url(), _admin_headers()
 
-    with httpx.Client(timeout=20.0) as client:
-        resp = client.post(
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
             f"{base}/auth/v1/admin/users",
             headers=headers,
             json={
@@ -147,7 +159,7 @@ def ensure_auth_user(*, profile_id: str, phone: str) -> str:
         # up rather than treating it as an error, so a returning patient signs in
         # instead of being told their account exists.
         if resp.status_code in (400, 409, 422):
-            found = client.get(
+            found = await client.get(
                 f"{base}/auth/v1/admin/users",
                 headers=headers,
                 params={"filter": email},
@@ -163,7 +175,7 @@ def ensure_auth_user(*, profile_id: str, phone: str) -> str:
         raise SessionMintError("Could not provision an account for this patient")
 
 
-def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
+async def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
     """
     Exchange a verified phone for a real GoTrue session.
 
@@ -183,7 +195,7 @@ def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
         logger.error("Refused to mint a session for role %r", role)
         raise SessionMintError("Sessions may only be minted for patient accounts")
 
-    user_id = ensure_auth_user(profile_id=profile_id, phone=phone)
+    user_id = await ensure_auth_user(profile_id=profile_id, phone=phone)
     email = sentinel_email(profile_id)
     base, headers = _base_url(), _admin_headers()
 
@@ -191,8 +203,8 @@ def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
     if not anon:
         raise SessionMintError("Anon key is not configured")
 
-    with httpx.Client(timeout=20.0) as client:
-        link = client.post(
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        link = await client.post(
             f"{base}/auth/v1/admin/generate_link",
             headers=headers,
             json={"type": "magiclink", "email": email},
@@ -208,7 +220,7 @@ def mint_session(*, profile_id: str, phone: str, role: str) -> MintedSession:
         # Redeemed with the ANON key, not the service key. The exchange must
         # happen as an ordinary client would perform it, so the session comes
         # back scoped to the user rather than inheriting service-role authority.
-        session = client.post(
+        session = await client.post(
             f"{base}/auth/v1/verify",
             headers={"apikey": anon, "Content-Type": "application/json"},
             # `token_hash`, not `token`. GoTrue treats `token` as the plaintext

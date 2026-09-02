@@ -297,7 +297,7 @@ class TestSessionMinting:
     not control.
     """
 
-    def test_only_patients_get_a_session(self):
+    async def test_only_patients_get_a_session(self):
         """
         The escalation this blocks: a clinician's phone in `profiles` would turn
         an SMS into a password-free path into a clinical account. Anyone who
@@ -308,7 +308,7 @@ class TestSessionMinting:
         assert set(MINTABLE_ROLES) == {"patient"}
         for role in ["clinician", "staff", "admin", "system", ""]:
             with pytest.raises(SessionMintError):
-                mint_session(profile_id="p1", phone="+6591234567", role=role)
+                await mint_session(profile_id="p1", phone="+6591234567", role=role)
 
     def test_sentinel_address_is_structurally_undeliverable(self):
         """
@@ -565,3 +565,57 @@ class TestCORSAllowsTheDeployedFrontend:
         finally:
             monkeypatch.delenv("CORS_ORIGINS", raising=False)
             importlib.reload(main)
+
+
+class TestNoBlockingIOInAsyncPaths:
+    """
+    Assessment §4.1: `mint_session` used a synchronous httpx.Client and was called
+    un-awaited from two async endpoints, blocking the event loop for up to 40s per
+    sign-in. During a morning login rush every other request — including /health —
+    queued behind one sign-in.
+
+    Nothing in the suite could see it: the call succeeded, returned the right
+    value, and only misbehaved under concurrency. So this asserts the shape
+    directly.
+    """
+
+    def test_session_module_uses_the_async_client(self):
+        import ast
+        import pathlib
+
+        import services.session as sess
+
+        src = pathlib.Path(sess.__file__).read_text()
+        tree = ast.parse(src)
+
+        # AST, not grep: the module docstring explains why httpx.Client was
+        # abandoned, and a text search cannot tell a rationale from a call.
+        # (This trap has bitten three times in this codebase.)
+        sync_clients = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "Client" and getattr(n.func.value, "id", "") == "httpx"
+        ]
+        assert not sync_clients, "httpx.Client blocks the event loop; use AsyncClient"
+
+    def test_session_entrypoints_are_coroutines(self):
+        import inspect
+
+        from services.session import ensure_auth_user, mint_session
+
+        assert inspect.iscoroutinefunction(mint_session)
+        assert inspect.iscoroutinefunction(ensure_auth_user)
+
+    def test_routers_await_mint_session(self):
+        """
+        An async function called without await returns a coroutine and silently
+        does nothing — the sign-in would appear to succeed and hand back a
+        never-populated session.
+        """
+        import pathlib
+
+        for f in ("routers/auth.py", "routers/auth_otp.py"):
+            src = pathlib.Path(f).read_text()
+            for line in src.split("\n"):
+                if "mint_session(" in line and "import" not in line and "def " not in line:
+                    assert "await" in line, f"{f}: mint_session called without await -> {line.strip()}"

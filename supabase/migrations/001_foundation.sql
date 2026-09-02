@@ -228,6 +228,49 @@ CREATE TRIGGER trg_strip_internal_glance_keys
   BEFORE INSERT OR UPDATE ON care_notes
   FOR EACH ROW EXECUTE FUNCTION strip_internal_glance_keys();
 
+-- A patient may edit their own profile, but not the two columns that decide what
+-- they are allowed to see.
+--
+-- The UPDATE policy on profiles is USING (id = auth.uid()) with no column
+-- restriction, so without this a row you may update is a row you may update ANY
+-- column of — including `role`, which every other policy keys on. Measured:
+-- `UPDATE profiles SET role='clinician' WHERE id=auth.uid()` took a patient from
+-- zero rows to the full internal record in one statement.
+--
+-- Only end-user roles are restricted. PostgREST maps every JWT to `authenticated`
+-- or `anon`, so those are the only roles an attacker can reach with a token;
+-- service_role, the owner and superusers keep provisioning and re-assignment.
+CREATE OR REPLACE FUNCTION pin_profile_identity_columns()
+RETURNS trigger AS $$
+BEGIN
+  IF current_user NOT IN ('authenticated', 'anon') THEN
+    RETURN NEW;
+  END IF;
+
+  -- Raise rather than silently pin: a silent revert lets a UI report success for
+  -- a change that did not happen, and hides the attempt.
+  IF NEW.role IS DISTINCT FROM OLD.role THEN
+    RAISE EXCEPTION
+      'role may not be changed by the account holder (attempted % -> %)',
+      OLD.role, NEW.role
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  IF NEW.clinic_id IS DISTINCT FROM OLD.clinic_id THEN
+    RAISE EXCEPTION 'clinic_id may not be changed by the account holder'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_pin_profile_identity ON profiles;
+
+CREATE TRIGGER trg_pin_profile_identity
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION pin_profile_identity_columns();
+
 CREATE TABLE interaction_log (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id          uuid NOT NULL REFERENCES profiles(id),

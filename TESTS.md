@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**420 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**429 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -48,13 +48,13 @@ live database; neither runs in pytest.
 | [`test_conflicts_endpoint`](#6-clinical-contradictions--26) | 26 | Cross-author contradiction detection |
 | [`test_concurrent_edits`](#7-concurrent-edits--19) | 19 | Non-destructive merge, deterministic resolution |
 | [`test_revision_history`](#8-revision-history--16) | 16 | Versioning, revert, metadata-only audit |
-| [`test_rbac_scope`](#9-rbac--24) | 24 | Role and tenant isolation at the database |
+| [`test_rbac_scope`](#9-rbac--30) | 30 | Role and tenant isolation at the database |
 | [`test_self_learning_importance`](#10-self-learning--15) | 15 | Learning moves scores, within a clinic only |
 | [`test_highlights_pipeline_safety`](#11-pipeline-integration--7) | 7 | The safety layer runs *inside* the real route |
 | [`test_meta_rls_sanity`](#12-meta-guard--3) | 3 | Guards against a green suite that proves nothing |
 | [`test_patient_message_gate`](#13-patient-message-gate--12) | 12 | The maker-checker firewall, in the path a message actually travels |
 | [`test_delivery_and_retraction`](#14-delivery-retraction-and-provenance--17) | 17 | Delivery is traced, not assumed; retraction; quote fingerprinting |
-| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--38) | 38 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
+| [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--41) | 41 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
 | [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
 | [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--22) | 22 | Real provider dispatch, webhook authenticity, passwordless token identity |
 
@@ -341,7 +341,7 @@ of the record.
 
 ---
 
-## 9. RBAC — 24
+## 9. RBAC — 30
 
 `tests/test_rbac_scope.py` · database, non-superuser
 
@@ -489,7 +489,7 @@ regression, each fails a test.
 
 ---
 
-## 15. Mock provider, OTP and read-time provenance — 38
+## 15. Mock provider, OTP and read-time provenance — 41
 
 `ai-service/tests/test_hardening.py` · unit + AST
 

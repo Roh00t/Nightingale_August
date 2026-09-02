@@ -3,7 +3,7 @@
 Everything below is **manual** — none of it can be done from the repo. Ordered by
 dependency: each step assumes the previous one landed.
 
-Current state: 420 tests pass, both TypeScript projects typecheck, `next build`
+Current state: 429 tests pass, both TypeScript projects typecheck, `next build`
 compiles, 1 commit(s) ahead of `origin/master`.
 
 > **Secrets are never written into this file.** Read the generated webhook secret
@@ -19,7 +19,11 @@ compiles, 1 commit(s) ahead of `origin/master`.
 
 Supabase Dashboard → **SQL Editor** → New query.
 
-Easiest: paste **`supabase/DEPLOY_20260901_all.sql`** — all four in order, in one
+Easiest: paste **`supabase/DEPLOY_20260901_all.sql`** for 1-4, then migrations 5 and 6 below.
+
+> **Migration 6 is the CRITICAL privilege-escalation fix.** Without it a patient
+> can run `UPDATE profiles SET role='clinician' WHERE id=auth.uid()` and read the
+> entire internal record. Apply it even if you skip everything else, in one
 run, verified to apply and re-apply cleanly against a throwaway cluster. Or
 paste them individually below; the order is load-bearing either way.
 
@@ -29,6 +33,8 @@ paste them individually below; the order is load-bearing either way.
 | 2 | `supabase/migrations/20260901_care_notes_version.sql` | `care_notes.version`, `save_care_note_yjs()`, highlight provenance columns | 1 |
 | 3 | `supabase/migrations/20260901_phone_identity_and_delivery.sql` | `profiles.phone_e164`, `patient_access_tokens`, `message_deliveries`, retraction columns | 1, 2 |
 | 4 | `supabase/migrations/20260901_glance_cache_guard.sql` | Trigger preventing the assessment being written back into `glance_cache`, plus a repair of any row that already was | 1 |
+| 5 | `supabase/migrations/20260902_telegram_identity.sql` | `profiles.telegram_chat_id`, delivery chat binding | 3 |
+| 6 | `supabase/migrations/20260902_pin_profile_identity.sql` | **CRITICAL** — trigger blocking a patient from changing their own `role` / `clinic_id` | `001_foundation.sql` |
 
 **Why the order matters.** Migration 1 adds `clinic_id` as `NOT NULL` *after*
 backfilling it from `care_notes`, and installs the trigger that keeps it correct
