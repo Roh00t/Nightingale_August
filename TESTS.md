@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**442 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**460 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -57,6 +57,8 @@ live database; neither runs in pytest.
 | [`test_hardening`](#15-mock-provider-otp-and-read-time-provenance--41) | 41 | The mock cannot send or forge; OTP does not enumerate; provenance verified at read; CORS |
 | [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
 | [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--22) | 22 | Real provider dispatch, webhook authenticity, passwordless token identity |
+| [`test_rate_limiting`](#18-rate-limiting--9) | 9 | The unauthenticated surface is bounded; the limiter cannot become the vulnerability |
+| [`test_audit_boundaries`](#19-audit-boundaries--18) | 18 | Pins the documented LIMITATIONS so claims cannot drift |
 
 ---
 
@@ -600,6 +602,38 @@ distinguishable response would be an oracle for guessing tokens.
 Redemption stores only a SHA-256 hash, refuses non-patient roles, and returns one
 indistinguishable message across expired / consumed / unknown / exhausted — the
 test collects all four messages into a set and asserts it has size 1.
+
+
+---
+
+## 18. Rate limiting — 9
+
+`ai-service/tests/test_rate_limiting.py`
+
+In-process sliding window. Tightest on `/request-otp`, because each call sends a
+real message — an attacker who cannot guess a code can still spam a patient's
+handset. `/health` and `/ready` are exempt: an uptime probe that trips the
+limiter takes the service out of the load balancer for a reason it invented.
+Two tests exist so the limiter cannot become the vulnerability: the client map is
+capped, and the window is asserted sliding rather than fixed (a fixed 60s bucket
+permits 2x the limit across a boundary).
+
+---
+
+## 19. Audit boundaries — 18
+
+`ai-service/tests/test_audit_boundaries.py`
+
+These assert **limitations**, not features. Where `CLAUDE.md` §8 says free-text
+names leak from logs, a test asserts they leak. Where it says exposure-bias
+sampling is absent, a test asserts its absence. Each fails the moment the gap is
+closed, forcing the documentation to be regraded with the code.
+
+The suite earned its place immediately: scenario 13 was drafted as PARTIAL on the
+reasoning that a contradiction engine exists. Writing the test showed the engine
+requires both sides to name the same drug with an explicit negation, so
+"Penicillin allergy" versus "no known drug allergies" produces zero conflicts.
+The scenario was regraded **DOES NOT** and capability 10 **MISSING**.
 
 ---
 

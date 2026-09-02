@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**442 automated tests, runnable offline with no credentials.**
+**460 automated tests, runnable offline with no credentials.**
 
 **Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
 — PHI redacted before egress, access enforced at the database, audit records
@@ -827,7 +827,7 @@ once live transcription is running.
 ## 11. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 442 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 460 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs
@@ -1024,3 +1024,79 @@ Ranked honestly:
    traced to its size — the `glance_cache` write-back leak and two drifting URL
    builders. It is a known fault line, deliberately left alone this close to a
    deadline rather than refactored under time pressure.
+
+---
+
+## 13. The sixteen clinical failure scenarios
+
+Full per-scenario detail — status, exact `file:line`, failure cascade and
+remediation — is in **`CLAUDE.md` §8**, which is the authoritative record. This
+section is the summary and the three findings worth reading if you read nothing
+else.
+
+### Scorecard
+
+| # | Scenario | Status |
+|---|---|---|
+| 1 | Phone-only patient, no email | PARTIAL — API complete, **no UI at all** |
+| 2 | Clinic isolation, one line buggy | **SURVIVES** — two independent barriers |
+| 3 | PHI in logs and telemetry | PARTIAL — structured IDs caught, free-text names not |
+| 4 | Redaction precedes the model | **SURVIVES** — enforced at a single chokepoint |
+| 5 | Clinic B onboards Monday | **SURVIVES** — config only, no schema change |
+| 6 | Trilingual utterance | PARTIAL — transcribes, but safety rules are English |
+| 7 | Allergy at minute two | **DOES NOT** — whole-file transcription |
+| 8 | Model hangs 45s | **SURVIVES** — 20s server, 25s client |
+| 9 | Provider 503 for an hour | PARTIAL — rule-derived fallback, one trigger of four |
+| 10 | Two clinicians, same note | **SURVIVES** — CRDT, or OCC that refuses |
+| 11 | Link sent, never received | PARTIAL — traced honestly; nothing reaches a real patient |
+| 12 | Patient summary wrong by a dosage | **SURVIVES** — gated, and retractable |
+| 13 | Nurse allergy vs patient denial | **DOES NOT** — blanket denial undetected |
+| 14 | Metric integrity | **SURVIVES** — three quantities, never collapsed |
+| 15 | Learning loop under fatigue | PARTIAL — fatigue handled, exposure bias not |
+| 16 | Highlight cites edited source | PARTIAL — staleness marked, not diffed |
+
+**Six SURVIVE · seven PARTIAL · three DO NOT.**
+
+### The three that matter most
+
+**Scenario 13 was downgraded by writing its test.** An earlier draft graded it
+PARTIAL, reasoning that a contradiction engine exists and ranks allergy highest.
+It does. It also requires both sides to name the same drug with an explicit
+negation, so "Penicillin allergy" versus "no known drug allergies" — the exact
+scenario — produces **zero** conflicts and a clean glance card. Four phrasings
+were run through the real engine to establish that. The fix is a blanket-denial
+pattern, deliberately not written this close to a deadline: a half-tuned allergy
+detector that misses a different phrasing is the same failure wearing a green
+tick. Pinned by `tests/test_audit_boundaries.py::TestBlanketDenialIsNotDetected`,
+which fails the moment it is fixed, forcing the grade to be revisited.
+
+**Scenario 1 is API-complete and unreachable.** Token redemption, session
+minting and Telegram binding are implemented, tested and live-verified against
+GoTrue. But `grep` finds zero frontend call sites for `patient-link` or
+`redeem-token`, and `frontend/app/portal/login` does not exist. The front desk
+has no button and the portal link 404s. The identity model no longer requires an
+email; nothing a human touches reflects that.
+
+**Scenario 7 is a boundary, not a bug.** Transcription is whole-file, so an
+allergy stated at minute two is known at minute twenty. Streaming ASR needs
+partial-hypothesis handling, and a partial transcript asserting "no known
+allergies" before the correction arrives is a worse artefact than a
+late-but-complete one.
+
+### On the boundaries generally
+
+Three capabilities are MISSING by decision, with reasoning in §12.3: streaming
+ASR, dosage-safety validation, and readability rewriting. The load-bearing one is
+dosage. **Grounding proves a dose was said; it never proves the dose is correct.**
+There is no formulary, no interaction check, no dose-range validation, and adding
+a partial one would invite exactly the delegation this design refuses — a
+clinician trusting a safety check that only covers what someone had time to
+encode.
+
+### How these claims are kept honest
+
+`tests/test_audit_boundaries.py` asserts the *limitations*, not the features.
+Where the audit says a name leaks, a test asserts it leaks. Where it says
+exposure-bias sampling is absent, a test asserts its absence. Each fails if the
+gap is closed, so the documentation cannot drift into claiming more than the code
+does — which is the failure mode this whole audit exists to avoid.

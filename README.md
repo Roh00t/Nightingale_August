@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**442 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**460 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > **Compliance posture — read this before quoting the security sections.**
 > This is a prototype built on **synthetic data only**. The design is
@@ -428,7 +428,7 @@ AI service will not report ready without it.
 cd ai-service && .venv/bin/python -m pytest tests/ -v
 ```
 
-Expect **442 passed**. The suites build an ephemeral PostgreSQL cluster, apply
+Expect **460 passed**. The suites build an ephemeral PostgreSQL cluster, apply
 `supabase/migrations/001_foundation.sql` verbatim, and seed both demo clinics.
 No cloud project, no Docker, no credentials, and no metered API calls.
 
