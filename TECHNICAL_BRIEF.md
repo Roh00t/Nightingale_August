@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**460 automated tests, runnable offline with no credentials.**
+**480 automated tests, runnable offline with no credentials.**
 
 **Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
 — PHI redacted before egress, access enforced at the database, audit records
@@ -827,7 +827,7 @@ once live transcription is running.
 ## 11. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 460 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 480 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs
@@ -1107,7 +1107,7 @@ does — which is the failure mode this whole audit exists to avoid.
 
 Every claim in §12.3 and §13 about what this system deliberately does *not* do is
 backed by a test that fails if the boundary moves.
-`ai-service/tests/test_audit_boundaries.py` — 18 tests — asserts the
+`ai-service/tests/test_audit_boundaries.py` — 38 tests — asserts the
 **limitations**, not the features. That inversion is the point.
 
 A conventional suite proves the code does what you claim. It cannot detect the

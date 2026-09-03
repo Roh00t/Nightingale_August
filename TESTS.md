@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**460 tests. 0 failures. No credentials, no Docker, no metered API calls.**
+**480 tests. 0 failures. No credentials, no Docker, no metered API calls.**
 
 ```bash
 npm test                                              # from the repo root
@@ -12,8 +12,12 @@ cd ai-service && .venv/bin/python -m pytest tests/ -v # or directly
 > `ModuleNotFoundError: No module named 'psycopg'`. It now uses the venv
 > interpreter — the same class of bug as `npm run dev:ai`.
 >
-> There is no frontend unit-test suite; `tsc --noEmit` and the production build
-> cover the TypeScript side.
+> The frontend has 50 Vitest tests (`cd frontend && npx vitest run`) over the
+> pure clinical rules extracted from components — patient visibility, the
+> collapse predicate, the care-plan index contract. **ABSENT: any test that
+> renders a component**; `vitest.config.ts` scopes the glob to `lib/` because
+> there is no jsdom setup, so the rules are proven and the rendering is not.
+> `tsc --noEmit` and the production build cover the rest of the TypeScript side.
 
 Everything runs offline. The database-backed suites build their own PostgreSQL
 cluster from `supabase/migrations/001_foundation.sql`; the AI suites stub only
@@ -58,7 +62,7 @@ live database; neither runs in pytest.
 | [`test_frontend_route_contract`](#16-frontendbackend-route-contract--9) | 9 | Every path the frontend calls exists on the service |
 | [`test_telegram_messaging`](#17-telegram-dispatch-and-token-identity--26) | 26 | Real provider dispatch, webhook authenticity, passwordless token identity |
 | [`test_rate_limiting`](#18-rate-limiting--9) | 9 | The unauthenticated surface is bounded; the limiter cannot become the vulnerability |
-| [`test_audit_boundaries`](#19-audit-boundaries--18) | 18 | Pins the documented LIMITATIONS so claims cannot drift |
+| [`test_audit_boundaries`](#19-audit-boundaries--38) | 38 | Pins the documented LIMITATIONS so claims cannot drift |
 
 ---
 
@@ -620,7 +624,7 @@ permits 2x the limit across a boundary).
 
 ---
 
-## 19. Audit boundaries — 18
+## 19. Audit boundaries — 38
 
 `ai-service/tests/test_audit_boundaries.py`
 

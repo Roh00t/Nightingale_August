@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**460 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**480 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > **Compliance posture — read this before quoting the security sections.**
 > This is a prototype built on **synthetic data only**. The design is
@@ -1074,11 +1074,25 @@ cd frontend && npx tsc --noEmit
 cd collab-server && npx tsc --noEmit
 ```
 
-> There is **no frontend unit-test suite.** Vitest and Testing Library are
-> installed but no `.test.tsx` files exist, so the previous `test:frontend`
-> script always exited 1; it has been removed rather than left as a command that
-> cannot pass. Frontend correctness is covered by `tsc --noEmit`, the production
-> build, and the backend suites that exercise the same API contracts.
+> **Frontend: 50 Vitest tests, and a deliberate boundary.**
+>
+> ```bash
+> cd frontend && npx vitest run          # 50 passed
+> ```
+>
+> These cover the *pure clinical rules* that were extracted out of components
+> precisely so they could be tested — `patient_visibility` (what a patient may be
+> shown), `clinical_alerts` (when a summary may not be collapsed), `care_plan`
+> (the index contract behind a checkbox), `clinical_values`, `telemetry`. Several
+> were mutation-tested: the fix is deliberately broken again to confirm a test
+> notices.
+>
+> **ABSENT: any test that renders a component.** `vitest.config.ts` scopes the
+> glob to `lib/` on purpose — there is no jsdom or Testing Library setup, so
+> nothing here mounts the patient portal or the clinician workspace. What is
+> proven is that the rules are correct, not that a browser honours them. The
+> remaining coverage is `tsc --noEmit`, the production build, and the backend
+> suites that exercise the same API contracts.
 
 | Suite | Tests | Covers |
 |---|---|---|

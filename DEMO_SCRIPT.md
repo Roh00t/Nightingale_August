@@ -49,7 +49,7 @@ supabase start
 cd ai-service && .venv/bin/python -m pytest tests/ -q
 ```
 
-> "460 tests. No credentials needed — the suite builds its own throwaway Postgres
+> "480 tests. No credentials needed — the suite builds its own throwaway Postgres
 > from the migration file and runs as a non-superuser, because a superuser
 > bypasses RLS and every access-control test would pass while proving nothing."
 
