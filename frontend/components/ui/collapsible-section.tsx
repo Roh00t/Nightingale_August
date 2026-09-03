@@ -1,7 +1,9 @@
 'use client';
 
+import { useRef } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { emit, type TelemetryComponent } from '@/lib/telemetry';
 
 interface CollapsibleSectionProps {
   /** Always names the contents in words, e.g. "At a Glance". */
@@ -26,6 +28,12 @@ interface CollapsibleSectionProps {
    * open properly would need state this component is not allowed to have.
    */
   forceOpen?: boolean;
+  /**
+   * Fixed id from the telemetry union — never derived from `title`, a prop or
+   * element text, which is the path by which a drug name reaches an analytics
+   * column. Omit to record nothing.
+   */
+  telemetryId?: TelemetryComponent;
   children: React.ReactNode;
   className?: string;
 }
@@ -34,9 +42,31 @@ export function CollapsibleSection({
   title,
   subtitle,
   forceOpen = false,
+  telemetryId,
   children,
   className,
 }: CollapsibleSectionProps) {
+  // Time from mount to first expand — the measure of whether default-closed is
+  // helping or taxing. If this is consistently under a few seconds, the section
+  // should not have been closed and the data says so rather than the argument.
+  const mountedAt = useRef(Date.now());
+  const openedAt = useRef<number | null>(null);
+
+  const handleToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    if (!telemetryId) return;
+    const isOpen = e.currentTarget.open;
+    if (isOpen) {
+      openedAt.current = Date.now();
+      emit(telemetryId, 'expand', { dwellMs: Date.now() - mountedAt.current });
+    } else {
+      // Dwell on collapse is the "orphaned expansion" signal: opened, glanced
+      // at for under a second, closed again means they were hunting for
+      // something that belongs higher up.
+      const dwell = openedAt.current ? Date.now() - openedAt.current : undefined;
+      openedAt.current = null;
+      emit(telemetryId, 'collapse', { dwellMs: dwell });
+    }
+  };
   const heading = (
     <>
       <span className="text-sm font-semibold">{title}</span>
@@ -58,7 +88,11 @@ export function CollapsibleSection({
   }
 
   return (
-    <details className={cn('group rounded-lg border border-border bg-card', className)}>
+    <details
+      className={cn('group rounded-lg border border-border bg-card', className)}
+      onToggle={handleToggle}
+      data-telemetry-id={telemetryId}
+    >
       <summary
         className={cn(
           'flex cursor-pointer list-none items-center gap-2 px-3 py-2',

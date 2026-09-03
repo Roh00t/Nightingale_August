@@ -53,19 +53,26 @@ export function ClinicalSummaryColumn({
 
       <CollapsibleSection
         title="Sunshine disclosure"
+        telemetryId="sunshine"
         subtitle="how much of this is AI, and is it auditable"
         forceOpen={forceOpen}
       >
         <SunshineBlock {...sunshine} />
       </CollapsibleSection>
 
-      <CollapsibleSection title="At a Glance" subtitle={glanceSummary} forceOpen={forceOpen}>
+      <CollapsibleSection
+        title="At a Glance"
+        subtitle={glanceSummary}
+        forceOpen={forceOpen}
+        telemetryId="at_a_glance"
+      >
         <TopCard {...glance} />
       </CollapsibleSection>
 
       {changes.length > 0 && (
         <CollapsibleSection
           title="Changes Since Last Visit"
+          telemetryId="changes_since_last_visit"
           subtitle={`${changes.length} change${changes.length === 1 ? '' : 's'}`}
           forceOpen={forceOpen}
         >

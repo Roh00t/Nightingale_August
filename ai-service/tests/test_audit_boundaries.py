@@ -499,3 +499,73 @@ class TestRedIsReservedForClinicalDanger:
             assert "emerald-" not in f.read_text(), (
                 f"{f.relative_to(REPO)}: use green-* — one token for verified/good"
             )
+
+
+class TestUITelemetryCannotCarryPHI:
+    """Phase B telemetry, pinned at the places it could go wrong.
+
+    The failure mode is not a dramatic leak; it is someone adding a helpful
+    field. A component_id built by concatenation, a patient_id "just for
+    joining", a .select() that makes every write fail silently. These assert the
+    shape that prevents each.
+    """
+
+    def _migration(self):
+        return (REPO / "supabase/migrations/20260903120000_ui_telemetry.sql").read_text()
+
+    def test_schema_has_no_identifying_columns(self):
+        sql = self._migration()
+        body = sql[sql.index("CREATE TABLE IF NOT EXISTS ui_telemetry"):sql.index("CREATE INDEX")]
+        for col in ("user_id", "patient_id", "care_note_id", "email", "display_name"):
+            assert col not in body, (
+                f"ui_telemetry must not carry {col}: the mapping from a row to a "
+                f"person is deliberately never written, so there is nothing to protect"
+            )
+
+    def test_component_id_is_allowlisted_in_the_database(self):
+        """A client-side allowlist is a convenience. This is the control."""
+        sql = self._migration()
+        assert "component_id  text NOT NULL CHECK (component_id IN (" in sql, (
+            "component_id must be CHECK-constrained, not free text"
+        )
+        assert "action        text NOT NULL CHECK (action IN (" in sql
+
+    def test_it_is_a_separate_table_from_interaction_log(self):
+        """importance.py scores unknown action_types at +0.3 — a POSITIVE
+        engagement weight — and reads only the 200 most recent rows. UI events in
+        interaction_log would promote arbitrary highlights and flush genuine
+        accept/reject signal out of the window."""
+        src = (REPO / "frontend/lib/telemetry.ts").read_text()
+        assert "'ui_telemetry'" in src
+        assert "interaction_log" not in src, (
+            "UI telemetry must never be written to interaction_log"
+        )
+
+    def test_the_emitter_does_not_read_back(self):
+        """Non-admins may write telemetry but not read it. Chaining .select()
+        would make the insert perform a SELECT, fail the policy, and reject every
+        write — silently, since the emitter swallows errors."""
+        src = (REPO / "frontend/lib/telemetry.ts").read_text()
+        insert_at = src.index(".from('ui_telemetry')")
+        window = src[insert_at:insert_at + 200]
+        assert ".select(" not in window, (
+            "no .select() on the telemetry insert — it would break every write"
+        )
+
+    def test_component_ids_are_literals_not_derived(self):
+        """The path by which a drug name reaches an analytics column is a
+        component id built from a prop, a label, or element text."""
+        src = (REPO / "frontend/components/ui/collapsible-section.tsx").read_text()
+        assert "telemetryId?: TelemetryComponent" in src, (
+            "the id must be typed to the union, not a plain string"
+        )
+        assert "emit(telemetryId," in src
+
+    def test_dashboard_views_run_as_the_invoker(self):
+        """Without security_invoker a view runs as its owner and hands every
+        clinic's rows to any reader — the classic way a read-only dashboard
+        becomes a cross-tenant leak."""
+        sql = (REPO / "supabase/migrations/20260903140000_ui_telemetry_views.sql").read_text()
+        assert sql.count("security_invoker = true") == 4, (
+            "every telemetry view must set security_invoker"
+        )
