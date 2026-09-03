@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hasActiveCriticalAlert, hasCriticalConflict } from './clinical_alerts';
+import { describeGlanceLoad, hasActiveCriticalAlert, hasCriticalConflict } from './clinical_alerts';
 import type { ClinicalConflict, GlanceCache, Highlight } from '@/lib/types';
 
 const glance = (over: Partial<GlanceCache> = {}): GlanceCache =>
@@ -118,5 +118,52 @@ describe('hasCriticalConflict', () => {
 
   it('is false on an empty list', () => {
     expect(hasCriticalConflict([])).toBe(false);
+  });
+});
+
+describe('describeGlanceLoad', () => {
+  it('says "not checked" when the AI is down, never a count', () => {
+    // The load-bearing case. A count derived from a check that never ran looks
+    // like evidence, which is worse than no count at all.
+    expect(describeGlanceLoad({
+      ...base,
+      aiDegraded: true,
+      highlights: [hl({ risk_level: 'critical' })],
+    })).toBe('not checked — AI unavailable');
+  });
+
+  it('says "nothing flagged" only when the check ran and found nothing', () => {
+    expect(describeGlanceLoad(base)).toBe('nothing flagged');
+  });
+
+  it('counts findings and criticals', () => {
+    expect(describeGlanceLoad({
+      ...base,
+      highlights: [hl({ risk_level: 'critical' }), hl({ risk_level: 'high' })],
+    })).toBe('2 findings · 1 critical');
+  });
+
+  it('singularises', () => {
+    expect(describeGlanceLoad({ ...base, highlights: [hl({ risk_level: 'high' })] }))
+      .toBe('1 finding');
+  });
+
+  it('excludes rejected highlights from the count', () => {
+    expect(describeGlanceLoad({
+      ...base,
+      highlights: [hl({ risk_level: 'high', is_accepted: false })],
+    })).toBe('nothing flagged');
+  });
+
+  it('mentions contradictions', () => {
+    expect(describeGlanceLoad({ ...base, conflicts: [conflict()] }))
+      .toBe('1 contradiction');
+  });
+
+  it('falls back to top_items when there are no highlights', () => {
+    expect(describeGlanceLoad({
+      ...base,
+      glanceCache: glance({ top_items: [{ type: 'risk', text: 'x', risk_level: 'high' }] }),
+    })).toBe('1 item');
   });
 });

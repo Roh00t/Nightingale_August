@@ -35,7 +35,6 @@ import {
 interface TopCardProps {
   glanceCache: GlanceCache;
   highlights: Highlight[];
-  changesSinceLastVisit: ChangeSinceLastVisit[];
   carePlanItems: CarePlanItem[];
   carePlanScore: number;
   userRole: UserRole;
@@ -83,7 +82,6 @@ export function TopCard({
   currentNoteVersion,
   glanceCache,
   highlights,
-  changesSinceLastVisit,
   carePlanItems,
   carePlanScore,
   userRole,
@@ -237,39 +235,6 @@ export function TopCard({
           )}
         </CardContent>
       </Card>
-
-      {/* Changes since last visit */}
-      {changesSinceLastVisit.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2 px-3 sm:px-6">
-            <CardTitle className="text-sm">Changes Since Last Visit</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 px-3 sm:px-6">
-            {changesSinceLastVisit.map((change, idx) => {
-              const Icon = changeIcons[change.type] || AlertCircle;
-              const colorClass = changeColors[change.type] || 'text-gray-600 bg-gray-50';
-              const [textColor, bgColor] = colorClass.split(' ');
-
-              return (
-                <div
-                  key={idx}
-                  className="flex items-start gap-3 py-1.5"
-                >
-                  <div className={`w-6 h-6 rounded-lg ${bgColor} flex items-center justify-center shrink-0 mt-0.5`}>
-                    <Icon className={`w-3.5 h-3.5 ${textColor}`} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm leading-snug break-words">{change.text}</p>
-                    <Badge variant="outline" className="text-[11px] mt-1 px-1.5 break-words">
-                      {change.detail}
-                    </Badge>
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
 
       {/* Care Plan */}
       {carePlanItems.length > 0 && (

@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
 import { TopCard } from '@/components/glance/TopCard';
+import { ChangesSinceLastVisitCard } from '@/components/glance/ChangesSinceLastVisitCard';
 import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { VoiceCapture } from '@/components/voice/VoiceCapture';
 import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferReasonDialog';
@@ -18,7 +19,8 @@ import { Badge } from '@/components/ui/badge';
 import { CarePlanCard } from '@/components/patient/CarePlanCard';
 import { AIActionsCard } from '@/components/patient/AIActionsCard';
 import { DegradedAIPanel } from '@/components/patient/DegradedAIPanel';
-import { hasCriticalConflict } from '@/lib/clinical_alerts';
+import { describeGlanceLoad, hasActiveCriticalAlert, hasCriticalConflict } from '@/lib/clinical_alerts';
+import { ClinicalSummaryColumn } from '@/components/patient/ClinicalSummaryColumn';
 import { useAppStore } from '@/lib/stores/app-store';
 import { isApprovedForPatient } from '@/lib/patient_visibility';
 import { toast } from 'sonner';
@@ -1382,7 +1384,6 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             currentNoteVersion={careNote.version}
             glanceCache={careNote.glance_cache}
             highlights={highlights}
-            changesSinceLastVisit={careNote.glance_cache.changes_since_last_visit || []}
             carePlanItems={[]} /* Care plan moved to center column */
             carePlanScore={carePlanScore}
             userRole="admin"
@@ -1390,6 +1391,12 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onAcceptHighlight={() => {}}
             onRejectHighlight={() => {}}
             onToggleCarePlanItem={() => {}}
+          />
+          {/* Lifted out of TopCard in the same commit that dropped the prop.
+              Admin keeps it non-collapsible — this refactor targets the
+              clinician branch and must not change what an admin sees. */}
+          <ChangesSinceLastVisitCard
+            changes={careNote.glance_cache.changes_since_last_visit || []}
           />
         </div>
 
@@ -1465,6 +1472,19 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   }
 
   // Clinician/Staff view — 3-column layout
+  // Not hooks — plain derivations before the clinician return, so hook order is
+  // unaffected. The alert rule lives in lib/clinical_alerts.ts because it is a
+  // clinical rule, and it is the single point of failure for the whole collapse
+  // decision.
+  const alertInputs = {
+    highlights,
+    conflicts,
+    glanceCache: careNote.glance_cache,
+    aiDegraded: conflictsDegraded !== null,
+  };
+  const summaryForceOpen = hasActiveCriticalAlert(alertInputs);
+  const glanceSummary = describeGlanceLoad(alertInputs);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <DeferReasonDialog
@@ -1620,59 +1640,74 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
         </div>
       )}
 
-      <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 flex-1 overflow-auto">
-        {/* Left column: At a Glance (col-span-3) */}
-        <div className="xl:col-span-3 space-y-3">
-          {/* An outage has to be visible here, not silent. If the contradiction check
-              could not run, "no contradictions" below is an absence of evidence, not
-              evidence of absence — and a clinician reading a clean Glance View has no
-              way to tell the difference unless told. */}
-          {conflictsDegraded && (
-            <DegradedAIPanel
-              kind={conflictsDegraded}
-              findings={offlineFindings}
-              coverageNote={offlineCoverageNote(entries)}
-              onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
-            />
-          )}
+      {/* Two columns, not three: a locked clinical summary on the left, an active
+          workspace on the right.
 
-          {/* Sunshine disclosure sits above everything: open actions, how much
-              of this is AI, and whether it is auditable — before any content. */}
-          <SunshineBlock
-            glanceCache={careNote.glance_cache}
-            highlights={highlights}
-            entries={entries}
-            userRole={activeRole}
-            conflictCount={conflictCount}
-            onReviewConflicts={handleReviewConflicts}
-          />
-          <TopCard
-            aiDegraded={conflictsDegraded !== null}
-            currentNoteVersion={careNote.version}
-            glanceCache={careNote.glance_cache}
-            highlights={highlights}
-            changesSinceLastVisit={careNote.glance_cache.changes_since_last_visit || []}
-            carePlanItems={[]} /* Care plan moved to center column */
-            carePlanScore={careNote.glance_cache.care_plan_score || 0}
-            userRole={activeRole}
-            onHighlightClick={handleHighlightClick}
-            onAcceptHighlight={handleAcceptHighlight}
-            onRejectHighlight={handleRejectHighlight}
-            loadingAction={loadingAction}
-            onToggleCarePlanItem={handleToggleCarePlanItem}
-            conflictCount={conflictCount}
-            hasCriticalConflict={hasCriticalConflict(conflicts)}
-            onReviewConflicts={handleReviewConflicts}
-            onAssignAction={handleAssignAction}
-            onCompleteAction={handleCompleteAction}
-            onDeferAction={handleDeferAction}
-          />
-        </div>
+          `min-h-0` is mandatory, not cosmetic. `flex-1` gives a flex child
+          `min-height: auto`, which refuses to shrink below its content — so
+          without it `xl:overflow-hidden` silently does nothing and the page
+          grows instead of the columns scrolling.
 
-        {/* Center column: Editor + Care Plan / AI Actions (col-span-5) */}
-        <div className="xl:col-span-5 flex flex-col gap-3">
-          {/* Care Note Editor */}
-          <div>
+          Every overflow/height class is xl:-prefixed. Below xl the layout is a
+          plain stack and must keep exactly ONE scroller; at xl there are three
+          independent ones (summary, workspace, timeline). */}
+      <div className="flex flex-col xl:grid xl:grid-cols-12 gap-4 p-4 flex-1 min-h-0 overflow-auto xl:overflow-hidden">
+        {/* Left: locked clinical summary. "Locked" means it scrolls
+            independently and does not move with the note — not that it cannot
+            scroll at all, since clipped clinical content is an absence. */}
+        <aside className="xl:col-span-4 xl:h-full xl:min-h-0 xl:overflow-y-auto space-y-3">
+          <ClinicalSummaryColumn
+            degraded={conflictsDegraded ? {
+              kind: conflictsDegraded,
+              findings: offlineFindings,
+              coverageNote: offlineCoverageNote(entries),
+              onRetry: () => { setConflictsDegraded(null); setConflictsChecked(false); },
+            } : null}
+            sunshine={{
+              glanceCache: careNote.glance_cache,
+              highlights,
+              entries,
+              userRole: activeRole,
+              conflictCount,
+              onReviewConflicts: handleReviewConflicts,
+            }}
+            glance={{
+              aiDegraded: conflictsDegraded !== null,
+              currentNoteVersion: careNote.version,
+              glanceCache: careNote.glance_cache,
+              highlights,
+              carePlanItems: [],
+              carePlanScore: careNote.glance_cache.care_plan_score || 0,
+              userRole: activeRole,
+              onHighlightClick: handleHighlightClick,
+              onAcceptHighlight: handleAcceptHighlight,
+              onRejectHighlight: handleRejectHighlight,
+              loadingAction,
+              onToggleCarePlanItem: handleToggleCarePlanItem,
+              conflictCount,
+              hasCriticalConflict: hasCriticalConflict(conflicts),
+              onReviewConflicts: handleReviewConflicts,
+              onAssignAction: handleAssignAction,
+              onCompleteAction: handleCompleteAction,
+              onDeferAction: handleDeferAction,
+            }}
+            changes={careNote.glance_cache.changes_since_last_visit || []}
+            forceOpen={summaryForceOpen}
+            glanceSummary={glanceSummary}
+          />
+        </aside>
+
+        {/* Right: the active workspace. The editor and the Care Plan sit side by
+            side rather than behind tabs — the clinician references the regimen
+            WHILE drafting, so mutual exclusion is the wrong model, and a tab
+            that may never unmount either panel is a worse split-pane with an
+            extra click. `resize-x` is the browser's own drag handle: no
+            dependency, no state. */}
+        <section className="xl:col-span-8 xl:h-full xl:min-h-0 flex flex-col gap-3 xl:overflow-hidden">
+          <div className="flex flex-col 2xl:grid 2xl:grid-cols-8 gap-3 flex-1 xl:min-h-0 xl:overflow-hidden">
+            <div className="2xl:col-span-5 flex flex-col gap-3 xl:min-h-0 xl:overflow-y-auto">
+              <div className="flex flex-col lg:flex-row gap-3 items-start">
+                <div className="w-full lg:flex-1 lg:min-w-[420px] lg:resize-x lg:overflow-auto">
             {currentUser && (
               <CareNoteEditor
                 careNoteId={careNote.id}
@@ -1690,45 +1725,47 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                 readOnly={activeRole !== 'clinician'}
                 onCreateTimelineEntry={handleCreateTimelineEntry}
               />
-            )}
-          </div>
+                )}
+                </div>
 
-          {/* 2-column layout below editor: Care Plan | AI Actions */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {/* Care Plan */}
-            <CarePlanCard
-              items={careNote.glance_cache.care_plan_items || []}
-              score={careNote.glance_cache.care_plan_score || 0}
-              onToggleItem={handleToggleCarePlanItem}
-            />
-
-            {/* Ambient capture — clinical view only, per the brief. */}
-            {(activeRole === 'clinician' || activeRole === 'staff') && token && (
-              <div className="sm:col-span-2">
-                <VoiceCapture
-                  token={token}
-                  userRole={activeRole}
-                  careNoteId={careNote.id}
-                  onSummary={handleVoiceSummary}
-                />
+                {/* The active regimen, visible while drafting rather than
+                    behind a tab. */}
+                <div className="w-full lg:w-[320px] lg:shrink-0">
+                  <CarePlanCard
+                    items={careNote.glance_cache.care_plan_items || []}
+                    score={careNote.glance_cache.care_plan_score || 0}
+                    onToggleItem={handleToggleCarePlanItem}
+                  />
+                </div>
               </div>
-            )}
 
-            {/* AI Actions */}
-            {(activeRole === 'clinician' || activeRole === 'staff') && (
-              <AIActionsCard
-                canGenerateSummary={activeRole === 'clinician'}
-                onGenerateSummary={handleRequestAISummary}
-                summarising={loadingAction === 'ai-summary'}
-                onDraftMessage={handleDraftPatientMessage}
-                drafting={generatingDraft}
-              />
-            )}
-          </div>
-        </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                {/* Ambient capture — clinical view only, per the brief.
+                    Permanently mounted: VoiceCapture releases the microphone on
+                    unmount, so anything that unmounts it kills an in-progress
+                    capture that cannot be re-recorded. */}
+                {(activeRole === 'clinician' || activeRole === 'staff') && token && (
+                  <VoiceCapture
+                    token={token}
+                    userRole={activeRole}
+                    careNoteId={careNote.id}
+                    onSummary={handleVoiceSummary}
+                  />
+                )}
 
-        {/* Right column: Timeline (col-span-4) */}
-        <div className="xl:col-span-4 overflow-visible xl:overflow-hidden min-h-[400px]">
+                {(activeRole === 'clinician' || activeRole === 'staff') && (
+                  <AIActionsCard
+                    canGenerateSummary={activeRole === 'clinician'}
+                    onGenerateSummary={handleRequestAISummary}
+                    summarising={loadingAction === 'ai-summary'}
+                    onDraftMessage={handleDraftPatientMessage}
+                    drafting={generatingDraft}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="2xl:col-span-3 min-h-[400px] xl:min-h-0 xl:overflow-hidden">
           <TimelineView
             entries={entries}
             comments={comments}
@@ -1748,7 +1785,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             onResolveComment={handleResolveComment}
             clinicMembers={clinicMembers}
           />
-        </div>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

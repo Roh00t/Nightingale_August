@@ -77,3 +77,42 @@ export function hasCriticalConflict(conflicts: ClinicalConflict[]): boolean {
  * force-open on virtually every real record, which is the same as having no
  * predicate at all — and a rule that always fires is a rule nobody reads.
  */
+
+/**
+ * The text a COLLAPSED section shows so that closed never reads as empty.
+ *
+ * guardrails.md UI-1: a degraded or notable state is stated in words, never
+ * implied by an absence. A closed disclosure is an absence, so the summary line
+ * has to carry the count the clinician would otherwise have to open the section
+ * to learn.
+ *
+ * The ordering matters. "not checked" must win over any count, because a count
+ * derived from a check that never ran is worse than no count — it looks like
+ * evidence.
+ */
+export function describeGlanceLoad({
+  highlights,
+  conflicts,
+  glanceCache,
+  aiDegraded,
+}: CriticalAlertInputs): string {
+  if (aiDegraded) return 'not checked — AI unavailable';
+
+  const critical = highlights.filter(
+    (h) => h.risk_level === 'critical' && h.is_accepted !== false,
+  ).length;
+  const shown = highlights.filter((h) => h.is_accepted !== false).length;
+  const items = (glanceCache.top_items ?? []).length;
+
+  const parts: string[] = [];
+  if (shown > 0) parts.push(`${shown} finding${shown === 1 ? '' : 's'}`);
+  else if (items > 0) parts.push(`${items} item${items === 1 ? '' : 's'}`);
+  if (critical > 0) parts.push(`${critical} critical`);
+  if (conflicts.length > 0) {
+    parts.push(`${conflicts.length} contradiction${conflicts.length === 1 ? '' : 's'}`);
+  }
+
+  // Only reachable when the check DID run and genuinely found nothing — which
+  // is why the aiDegraded early return above is not optional.
+  return parts.length > 0 ? parts.join(' · ') : 'nothing flagged';
+}

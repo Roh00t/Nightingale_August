@@ -244,7 +244,7 @@ export function CareNoteEditor({
     ],
     editorProps: {
       attributes: {
-        class: 'prose prose-sm text-sm max-w-none focus:outline-none min-h-[200px] p-4',
+        class: 'prose prose-sm text-sm max-w-[68ch] mx-auto focus:outline-none min-h-[200px] p-4',
       },
     },
   }, [provider]);
