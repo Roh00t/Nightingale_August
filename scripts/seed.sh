@@ -4,11 +4,28 @@
 
 set -euo pipefail
 
-# Load .env
+# Load .env, but let an already-exported value win.
+#
+# `source .env` unconditionally is a trap on the path the README and
+# DEMO_SCRIPT open with: `supabase start && ./scripts/seed.sh`. If .env points
+# at a hosted project, that seeds the HOSTED database while the evaluator sits
+# looking at an empty local one — and the script prints "Done!" either way,
+# because it did succeed, just not where they were looking.
+#
+# Exported values now take precedence, so the local stack can be seeded with:
+#   eval "$(npx supabase status -o env | sed 's/^/export /')" \
+#     && NEXT_PUBLIC_SUPABASE_URL="$API_URL" \
+#        SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" ./scripts/seed.sh
+_PRESET_URL="${NEXT_PUBLIC_SUPABASE_URL:-}"
+_PRESET_KEY="${SUPABASE_SERVICE_ROLE_KEY:-}"
 source .env
+[ -n "$_PRESET_URL" ] && NEXT_PUBLIC_SUPABASE_URL="$_PRESET_URL"
+[ -n "$_PRESET_KEY" ] && SUPABASE_SERVICE_ROLE_KEY="$_PRESET_KEY"
 
 URL="$NEXT_PUBLIC_SUPABASE_URL"
 KEY="$SUPABASE_SERVICE_ROLE_KEY"
+
+echo "Seeding: $URL"
 
 get_or_create_user() {
   local email="$1"
