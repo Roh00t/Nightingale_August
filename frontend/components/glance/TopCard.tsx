@@ -108,19 +108,22 @@ export function TopCard({
 
   return (
     <div className="space-y-4">
-      {/* Conflict Warning Banner */}
-      {conflictCount > 0 && (
-        <Card className="border-amber-200 bg-amber-50">
-          <CardContent className="py-3">
       {/* Degraded state, stated in words rather than implied by a colour.
           A tired clinician reading an empty flags list concludes "there are
           none" — the one reading a banner concludes "this was not checked".
           Those are opposite clinical actions, so the difference is spelled
-          out rather than left to a subtle visual cue. */}
+          out rather than left to a subtle visual cue.
+
+          This MUST render independently of conflictCount. It previously sat
+          inside the {conflictCount > 0 && ...} block below, which made it dead
+          in exactly the scenario it exists for: when the AI is unreachable the
+          contradiction check never runs, so conflictCount is 0, so the banner
+          never appeared and a clean-looking Glance View read as "nothing
+          found" rather than "not checked". */}
       {aiDegraded && (
         <div
           role="alert"
-          className="mb-3 rounded-md border-2 border-amber-600 bg-amber-100 dark:bg-amber-950/50 px-3 py-2"
+          className="rounded-md border-2 border-amber-600 bg-amber-100 dark:bg-amber-950/50 px-3 py-2"
         >
           <p className="text-sm font-bold uppercase tracking-wide text-amber-900 dark:text-amber-300">
             Offline Mode (Rule-Derived)
@@ -130,6 +133,11 @@ export function TopCard({
           </p>
         </div>
       )}
+
+      {/* Conflict Warning Banner */}
+      {conflictCount > 0 && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="py-3">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-4 h-4 text-amber-600" />

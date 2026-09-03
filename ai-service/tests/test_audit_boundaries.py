@@ -347,3 +347,47 @@ class TestPatientViewShowsOnlyApprovedContent:
         """
         sql = (REPO / "supabase/migrations/001_foundation.sql").read_text()
         assert '"patient_gate_verdict": "passed", "human_approved": false, "seeded": true' in sql
+
+
+class TestOfflineBannerIsNotGatedOnConflictCount:
+    """Scenario 9's offline banner was dead in the case it exists for.
+
+    `TopCard.tsx` rendered the "Offline Mode (Rule-Derived)" alert *inside*
+    `{conflictCount > 0 && ...}`. When the AI is unreachable the contradiction
+    check never runs, so `conflictCount` is 0 — so the banner never appeared,
+    and the clinician read a clean Glance View as "nothing found" rather than
+    "not checked". Those are opposite clinical actions, which is the exact
+    failure guardrails UI-1 exists to prevent.
+
+    Structural assertion over source: this repo has no harness that renders
+    TopCard, so what is pinned is the nesting, not the painted pixel.
+    """
+
+    def _src(self):
+        return (REPO / "frontend/components/glance/TopCard.tsx").read_text()
+
+    def test_degraded_banner_precedes_the_conflict_conditional(self):
+        src = self._src()
+        degraded_at = src.index("{aiDegraded && (")
+        conflict_at = src.index("{conflictCount > 0 && (")
+        assert degraded_at < conflict_at, (
+            "the aiDegraded banner must render before, and independently of, the "
+            "conflict banner — nesting it inside makes it dead when conflictCount is 0"
+        )
+
+    def test_degraded_banner_is_not_inside_the_conflict_card(self):
+        """The precedence check alone would pass if someone nested it the other way."""
+        src = self._src()
+        conflict_open = src.index("{conflictCount > 0 && (")
+        # The conflict block ends at its CardContent close; everything the
+        # aiDegraded alert needs must sit outside that span.
+        conflict_close = src.index("</Card>", conflict_open)
+        degraded_at = src.index("{aiDegraded && (")
+        assert not (conflict_open < degraded_at < conflict_close), (
+            "aiDegraded is nested inside the conflictCount Card again"
+        )
+
+    def test_the_wording_guardrails_ui1_requires_is_intact(self):
+        src = self._src()
+        assert "Offline Mode (Rule-Derived)" in src
+        assert "Absence of a flag does not imply absence of clinical concern." in src

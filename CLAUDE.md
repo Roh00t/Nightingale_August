@@ -429,12 +429,23 @@ dangerous than a missing one.
 - **Status:** PARTIAL
 - **Location:** `frontend/lib/offline_summary.ts:81` (`deriveOfflineFindings` —
   threshold rules over stored values, with bidirectional negation handling);
-  banner at `frontend/components/glance/TopCard.tsx:126`, wording
+  banner at `frontend/components/glance/TopCard.tsx:123`, wording
   *"Offline Mode (Rule-Derived) — Absence of a flag does not imply absence of
   clinical concern."*
-- **What breaks first:** Trigger coverage. The rule-derived panel is currently
-  driven by the **contradiction** check failing, not by `/summarize` failing. A
-  503 on summarisation shows a toast and leaves the Glance View as it was.
+- **Amended 3 Sep 2026 — the banner was dead code.** It was nested *inside*
+  `{conflictCount > 0 && ...}`. When the AI is unreachable the contradiction
+  check never runs, so `conflictCount` is 0, so the banner never rendered in
+  the one scenario it exists for. An earlier draft of this audit cited its line
+  number as evidence the control was present; the line existed and never
+  executed. Hoisted to a sibling of the conflict card and pinned by
+  `test_audit_boundaries.py::TestOfflineBannerIsNotGatedOnConflictCount`, which
+  fails if it is ever re-nested. Verified in a browser with the AI service
+  stopped and zero conflicts present.
+- **What breaks first, still:** Trigger coverage. `conflictsDegraded` is set by
+  the **contradiction** check failing, not by `/summarize` failing. A 503 on
+  summarisation shows a toast and leaves the Glance View as it was. Fixing the
+  nesting removed a defect; it did not widen the trigger surface, which remains
+  one endpoint of four. Grade stays **PARTIAL**.
 - **Why this shape:** An empty critical-flags panel reads as *"there are none"*;
   only a banner reads as *"this was not checked"*, and those are opposite
   clinical actions. The mechanism is right; its trigger surface is one endpoint
