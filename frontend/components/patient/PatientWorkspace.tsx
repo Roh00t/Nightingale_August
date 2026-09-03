@@ -1408,7 +1408,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                 <h3 className="text-sm font-semibold">Care Plan</h3>
                 <Badge
                   variant="secondary"
-                  className={`text-xs ${carePlanScore >= 50 ? 'bg-primary/10 text-primary' : 'bg-red-50 text-red-600'}`}
+                  className="text-xs bg-secondary text-muted-foreground"
                 >
                   {carePlanScore}%
                 </Badge>
@@ -1417,7 +1417,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
               <div className="w-full bg-secondary rounded-full h-2 mb-4 overflow-hidden">
                 <div
                   className={`h-2 rounded-full transition-all duration-700 ${
-                    carePlanScore >= 50 ? 'bg-primary' : 'bg-red-500'
+                    'bg-primary'
                   }`}
                   style={{ width: `${Math.min(carePlanScore, 100)}%` }}
                 />
@@ -1431,7 +1431,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                     <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
                       item.completed
                         ? 'bg-primary border-primary'
-                        : 'border-red-400 bg-red-50'
+                        : 'border-muted-foreground/40 bg-background'
                     }`}>
                       {item.completed && (
                         <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

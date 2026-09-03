@@ -423,3 +423,79 @@ class TestOfflineBannerIsNotGatedOnConflictCount:
         src = self._src()
         assert "Offline Mode (Rule-Derived)" in src
         assert "Absence of a flag does not imply absence of clinical concern." in src
+
+
+class TestRedIsReservedForClinicalDanger:
+    """guardrails.md UI-3, pinned.
+
+    An incomplete care-plan item once rendered `border-red-400 bg-red-50` —
+    louder than the critical-flags panel's own `border-red-200/60 bg-red-50/50`.
+    A clinician scanning for danger met fifteen red boxes meaning "not ticked"
+    before reaching one meaning "eGFR is falling". The cost of that lands on the
+    one alert that mattered.
+
+    These assertions are narrow on purpose: they name the specific patterns that
+    caused the problem rather than banning the string "red-", which would fail on
+    every legitimate use.
+    """
+
+    @staticmethod
+    def _code_only(path):
+        """Strip comments before asserting.
+
+        The first version of this test failed on a comment that *documented* the
+        removed pattern — the assertion was reading prose, not code. Same trap as
+        grepping a docstring for the thing the docstring describes.
+        """
+        import re
+        src = (REPO / path).read_text()
+        src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+        src = re.sub(r"(?m)^\s*//.*$", "", src)
+        return src
+
+    def test_care_plan_rows_are_not_red(self):
+        for rel in (
+            "frontend/components/patient/CarePlanCard.tsx",
+            "frontend/components/patient/PatientWorkspace.tsx",
+            "frontend/components/glance/TopCard.tsx",
+        ):
+            src = self._code_only(rel)
+            assert "border-red-400 bg-red-50" not in src, (
+                f"{rel}: an unticked checkbox is not a clinical danger (UI-3)"
+            )
+            assert "bg-red-50 text-red-600" not in src, (
+                f"{rel}: a low completion score is not a clinical danger (UI-3)"
+            )
+            assert "'bg-red-500'" not in src, (
+                f"{rel}: a progress bar is not a clinical danger (UI-3)"
+            )
+
+    def test_topcard_carries_no_red_at_all(self):
+        """TopCard is the Glance View. Its only red was decorative — reject
+        buttons and incomplete markers — and CriticalFlags, which it renders,
+        owns the genuine red."""
+        src = self._code_only("frontend/components/glance/TopCard.tsx")
+        assert "red-" not in src, (
+            "TopCard should carry no red; critical findings render through "
+            "CriticalFlags, which does"
+        )
+
+    def test_the_genuine_red_uses_survive(self):
+        """The rule is a reservation, not a ban. If these ever go quiet, the
+        de-escalation went too far."""
+        flags = (REPO / "frontend/components/glance/CriticalFlags.tsx").read_text()
+        assert "red-" in flags, "critical flags must stay red"
+        ws = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        assert "bg-red-600" in ws, "the patient's withdrawal notice must stay red"
+
+    def test_one_green_not_two(self):
+        """emerald-* and green-* were both in use for the same 'verified/good'
+        semantics. getTrustBadgeStyle defines the provenance language in green,
+        so green is canonical."""
+        import pathlib as _p
+        for f in (REPO / "frontend").rglob("*.tsx"):
+            if "node_modules" in str(f):
+                continue
+            assert "emerald-" not in f.read_text(), (
+                f"{f.relative_to(REPO)}: use green-* — one token for verified/good"
+            )
