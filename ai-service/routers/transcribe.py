@@ -45,11 +45,13 @@ from services.supabase_writer import (
     SupabaseUnavailable,
     insert_system_timeline_entry,
     resolve_care_note,
+    get_patient_display_name,
 )
 from services.redaction import (
     assert_no_residual_placeholders,
     cleanup_redaction_map,
     de_redact,
+    de_redact_verbose,
     redact,
     validate_and_repair_placeholders,
 )
@@ -225,6 +227,27 @@ async def transcribe_audio(
     # --- 4. Redact BEFORE the LLM -------------------------------------------
     # Speaker labels are inside the redacted string on purpose: the summariser
     # needs the dialogue structure, and only the identifiers are removed.
+    # Resolve the care note FIRST, for two reasons. The allowlist below needs the
+    # patient's name, and an access failure should not cost a Groq call.
+    care_note: dict[str, Any] | None = None
+    patient_name: str | None = None
+    if care_note_id:
+        try:
+            care_note = resolve_care_note(care_note_id, caller_clinic_id=caller.clinic_id)
+        except SupabaseUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AccessDenied as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # A patient may only file into their OWN care note. Clinic match alone
+        # would let them write into a peer's record.
+        if caller.role == "patient" and care_note.get("patient_id") != caller.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Patients may only file captures to their own care note.",
+            )
+        patient_name = get_patient_display_name(care_note.get("patient_id") or "")
+
     map_ids: list[str] = []
     try:
         redacted_text, rmap = redact(transcript.text)
@@ -256,8 +279,37 @@ async def transcribe_audio(
                 ),
             )
 
-        summary = de_redact(report.repaired_text, rmap.id)
-        residual = assert_no_residual_placeholders(summary)
+        # ONLY this chart's patient is restored. Everything else — another
+        # person named in the room, and every NRIC, phone and email regardless
+        # of whose it is — keeps its placeholder.
+        #
+        # De-redaction is faithful to the audio, not to the record it is being
+        # written into, and nothing else compares the two. Recording against the
+        # wrong open chart otherwise writes one patient's name, NRIC, date of
+        # birth and phone number permanently into another patient's record.
+        # Observed, not hypothetical: the mock transcript names a specific
+        # patient and did exactly that.
+        #
+        # The patient's own NRIC and phone are withheld too. The chart already
+        # identifies them; repeating an NRIC inside a narrative adds exposure
+        # and no clinical information.
+        allowlist = [patient_name] if patient_name else []
+        summary, withheld = de_redact_verbose(
+            report.repaired_text, rmap.id, restore_only=allowlist
+        )
+        if withheld:
+            # Stated in words. A bare <PERSON_1> in a clinical record with no
+            # explanation is the absence guardrails UI-1 forbids.
+            kinds = sorted(set(withheld.values()))
+            summary += (
+                "\n\n[IDENTIFIERS WITHHELD] "
+                + f"{len(withheld)} identifier(s) heard in this recording "
+                + f"({', '.join(kinds)}) were not written into this record "
+                + "because they do not belong to this patient, or are not needed here."
+            )
+        # Placeholders we withheld on purpose are a correct outcome; any OTHER
+        # survivor means the map and the text disagreed, which still fails closed.
+        residual = assert_no_residual_placeholders(summary, expected=withheld.keys())
         if residual:
             raise HTTPException(
                 status_code=500,
@@ -270,7 +322,9 @@ async def transcribe_audio(
                 continue
             point_report = validate_and_repair_placeholders(point, rmap)
             if point_report.ok:
-                key_points.append(de_redact(point_report.repaired_text, rmap.id))
+                key_points.append(
+                    de_redact(point_report.repaired_text, rmap.id, restore_only=allowlist)
+                )
 
         # Pair each segment with its redacted line. transcript.text joins one
         # line per segment, and redaction is a same-length substitution over
@@ -313,23 +367,7 @@ async def transcribe_audio(
         # re-implemented here by hand (guardrails.md S3).
         entry_id: str | None = None
         if care_note_id:
-            try:
-                care_note = resolve_care_note(
-                    care_note_id, caller_clinic_id=caller.clinic_id
-                )
-            except SupabaseUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except AccessDenied as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-            # A patient may only file into their OWN care note. Clinic match
-            # alone would let them write into a peer's record.
-            if caller.role == "patient" and care_note.get("patient_id") != caller.user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Patients may only file captures to their own care note.",
-                )
-
+            # Resolved and access-checked above, before the LLM call.
             entry = insert_system_timeline_entry(
                 care_note_id=care_note_id,
                 entry_type=entry_type,

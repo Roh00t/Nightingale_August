@@ -13,6 +13,8 @@ in the text we would send to Groq".
 from __future__ import annotations
 
 import re
+import pathlib
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 import pytest
 
@@ -316,3 +318,81 @@ class TestPlaceholderRepairDoesNotCorruptCorrectOutput:
         assert "S1234567D" not in redacted
         assert "IC number is" in redacted
         cleanup_redaction_map(rmap.id)
+
+
+class TestDeRedactionAllowlist:
+    """De-redaction is faithful to the audio, not to the chart.
+
+    Found by looking at a running app: an ambient capture recorded against one
+    patient's chart filed a summary reading "Alice Wong (NRIC S1234567D, DOB
+    14 March 1961, phone 91234567) ..." into a DIFFERENT patient's record, and
+    it persisted. Redaction had worked — the model never saw those values — and
+    then de_redact faithfully put them back, because nothing compared the person
+    named in the audio with the patient on the chart.
+    """
+
+    def test_only_the_named_patient_is_restored(self):
+        from services.redaction import redact, de_redact_verbose
+
+        text = "Patient Alice Wong, NRIC S1234567D, phone 91234567, eGFR 45."
+        redacted, rmap = redact(text)
+        out, withheld = de_redact_verbose(redacted, rmap.id, restore_only=["Bob Tan"])
+
+        assert "Alice Wong" not in out, "another patient's name must not be restored"
+        assert "S1234567D" not in out
+        assert "91234567" not in out
+        assert "eGFR 45" in out, "clinical values must survive — this is not over-redaction"
+        assert set(withheld.values()) >= {"PERSON", "NRIC"}
+
+    def test_the_patients_own_nric_and_phone_are_still_withheld(self):
+        """Data minimisation, not just identity matching.
+
+        The chart already identifies the patient. Repeating their NRIC inside a
+        narrative summary adds exposure and no clinical information.
+        """
+        from services.redaction import redact, de_redact_verbose
+
+        redacted, rmap = redact("Alice Wong, NRIC S1234567D, phone 91234567.")
+        out, withheld = de_redact_verbose(redacted, rmap.id, restore_only=["Alice Wong"])
+
+        assert "Alice Wong" in out, "the chart's own patient should read naturally"
+        assert "S1234567D" not in out
+        assert "91234567" not in out
+        assert set(withheld.values()) == {"NRIC", "PHONE"}
+
+    def test_matching_ignores_case_and_spacing(self):
+        from services.redaction import redact, de_redact_verbose
+
+        redacted, rmap = redact("Seen by Alice Wong today.")
+        out, _ = de_redact_verbose(redacted, rmap.id, restore_only=["  alice   WONG "])
+        assert "Alice Wong" in out
+
+    def test_no_allowlist_restores_everything(self):
+        """The default must not change. Every existing caller relies on it."""
+        from services.redaction import redact, de_redact
+
+        text = "Alice Wong, NRIC S1234567D."
+        redacted, rmap = redact(text)
+        assert de_redact(redacted, rmap.id) == text
+
+    def test_an_empty_allowlist_restores_nothing(self):
+        """No care_note_id means no patient context, so nothing is vouched for."""
+        from services.redaction import redact, de_redact_verbose
+
+        redacted, rmap = redact("Alice Wong, NRIC S1234567D.")
+        out, withheld = de_redact_verbose(redacted, rmap.id, restore_only=[])
+        assert "Alice Wong" not in out and "S1234567D" not in out
+        assert len(withheld) == 2
+
+    def test_withholding_is_stated_in_words_by_the_router(self):
+        """guardrails UI-1: a bare <PERSON_1> left in a clinical record with no
+        explanation is an absence, and absences must not carry meaning."""
+        src = (REPO_ROOT / "ai-service/routers/transcribe.py").read_text()
+        assert "[IDENTIFIERS WITHHELD]" in src
+        assert "de_redact_verbose" in src
+
+    def test_the_care_note_is_resolved_before_the_llm_call(self):
+        """Ordering matters twice: the allowlist needs the patient's name, and an
+        access failure should not cost a Groq call."""
+        src = (REPO_ROOT / "ai-service/routers/transcribe.py").read_text()
+        assert src.index("resolve_care_note(") < src.index("generate_patient_summary(")

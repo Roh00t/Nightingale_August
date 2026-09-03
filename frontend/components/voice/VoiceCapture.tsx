@@ -385,9 +385,13 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
                       ASR confidence {Math.round(result.transcription.mean_confidence * 100)}%
                     </Badge>
                   )}
+                  {/* "removed" alone was misleading: it described the LLM path
+                      while the summary below it showed the patient's own name,
+                      restored by de-redaction. A clinician calibrates trust to
+                      this badge, so it now names the stage it refers to. */}
                   {(result.redaction.total_entities ?? 0) > 0 && (
                     <Badge variant="secondary" className="bg-green-50 text-[10px] text-green-700">
-                      {result.redaction.total_entities} identifiers removed
+                      {result.redaction.total_entities} identifiers removed before AI
                     </Badge>
                   )}
                   {result.transcription.source === 'mock' && (

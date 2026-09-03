@@ -426,6 +426,39 @@ alone would miss both. It is regex-only by design: model inference on the
 emitting thread would add latency to every record and can deadlock if the
 analyser itself logs.
 
+#### De-redaction is scoped to the chart's own patient
+
+Redaction protects the *model*. De-redaction restores the real values afterwards,
+so a clinician reads "Alice Wong" rather than `<PERSON_1>` — and that restore was
+faithful to the **audio**, not to the record it was being written into.
+
+Nothing compared the two. An ambient capture recorded against the wrong open
+chart therefore wrote one patient's name, NRIC, date of birth and phone number
+permanently into another patient's record, restored from placeholders that had
+been safe. Observed in a running app, and confirmed persisted in the database.
+
+`de_redact` now takes an allowlist:
+
+- A **name** is restored only when it matches the care note's own patient.
+  Anyone else heard in the room keeps their placeholder.
+- **NRIC, phone and email are never restored** into an ambient summary, even the
+  patient's own. The chart already identifies them; repeating an NRIC inside a
+  narrative adds exposure and no clinical information.
+- Anything withheld is **stated in words** in the entry — a bare `<PERSON_1>` in
+  a clinical record with no explanation is the absence UI-1 forbids.
+- The care note is resolved **before** the model call, so the allowlist exists in
+  time and an access failure costs nothing.
+
+`assert_no_residual_placeholders` takes the withheld set, so a deliberate
+placeholder is a correct outcome while an unintended survivor still fails closed.
+
+**What this is not.** It is not a wrong-chart detector. Real consults name other
+people constantly — a spouse, a referring doctor, a nurse — so warning whenever
+the audio names a non-patient would fire on nearly every recording, and an alert
+that always fires is one clinicians learn to dismiss. This narrows the blast
+radius of a misfiled recording; it does not detect one. **ABSENT: any check that
+the recording belongs to the chart it is filed against.**
+
 ### The maker-checker firewall
 
 Patient-facing generation is the highest-severity path in the system and the only

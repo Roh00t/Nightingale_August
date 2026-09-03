@@ -29,6 +29,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -409,15 +410,78 @@ def get_map(map_id: str) -> RedactionMap | None:
         return _redaction_store.get(map_id)
 
 
-def de_redact(redacted_text: str, map_id: str) -> str:
-    """Restore original values. Raises KeyError if the map expired."""
+@dataclass
+class DeRedactionResult:
+    text: str
+    """Placeholders left in place because the value was not on the allowlist."""
+    withheld: dict[str, str] = field(default_factory=dict)
+
+
+def de_redact(
+    redacted_text: str,
+    map_id: str,
+    *,
+    restore_only: Collection[str] | None = None,
+) -> str:
+    """Restore original values. Raises KeyError if the map expired.
+
+    `restore_only` is a collection of original values that may be put back.
+    Anything not listed keeps its placeholder. Passing None restores everything,
+    which is the behaviour every existing caller relies on.
+
+    WHY AN ALLOWLIST EXISTS AT ALL. De-redaction is faithful to the *source
+    text*, not to the record it is being written into. An ambient consult
+    summary is filed against a care note, and nothing in this function knows
+    whether the person named in the audio is that note's patient. Without a
+    filter, recording against the wrong open chart writes one patient's name,
+    NRIC, date of birth and phone number permanently into another patient's
+    record — restored by this function, from placeholders that were safe.
+
+    That is not hypothetical: it is what the mock transcript did, every time,
+    because the fixture names a specific patient and the caller passed whatever
+    care note was open.
+    """
+    result, _ = de_redact_verbose(redacted_text, map_id, restore_only=restore_only)
+    return result
+
+
+def de_redact_verbose(
+    redacted_text: str,
+    map_id: str,
+    *,
+    restore_only: Collection[str] | None = None,
+) -> tuple[str, dict[str, str]]:
+    """de_redact, plus the placeholders it declined to restore.
+
+    Returned so the caller can say so in words rather than leaving a bare
+    `<PERSON_1>` in a clinical record with no explanation (guardrails UI-1).
+    """
     rmap = get_map(map_id)
     if rmap is None:
         raise KeyError(f"Redaction map '{map_id}' not found or has expired")
+
+    allow: set[str] | None = None
+    if restore_only is not None:
+        allow = {_normalise_identity(v) for v in restore_only if v}
+
     result = redacted_text
+    withheld: dict[str, str] = {}
     for placeholder, original in rmap.reverse.items():
+        if allow is not None and _normalise_identity(original) not in allow:
+            if placeholder in result:
+                withheld[placeholder] = _entity_type_of(placeholder)
+            continue
         result = result.replace(placeholder, original)
-    return result
+    return result, withheld
+
+
+def _normalise_identity(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _entity_type_of(placeholder: str) -> str:
+    m = _PLACEHOLDER_RE.match(placeholder)
+    return m.group(1) if m else "UNKNOWN"
 
 
 def cleanup_redaction_map(map_id: str) -> bool:
@@ -508,6 +572,18 @@ def validate_and_repair_placeholders(
     )
 
 
-def assert_no_residual_placeholders(text: str) -> list[str]:
-    """Return any placeholder-shaped tokens left after de-redaction (want: none)."""
-    return [m.group(0) for m in _PLACEHOLDER_RE.finditer(text)]
+def assert_no_residual_placeholders(
+    text: str, *, expected: Collection[str] = ()
+) -> list[str]:
+    """Placeholder-shaped tokens left after de-redaction that should NOT be there.
+
+    `expected` lists placeholders the caller deliberately withheld — an identifier
+    belonging to someone other than this record's patient, say. Those are a
+    correct outcome, not an integrity failure.
+
+    Everything else still is. A placeholder that survives *unintentionally* means
+    the map and the text disagreed, and the check exists to fail closed rather
+    than write a half-restored record.
+    """
+    allowed = set(expected)
+    return [m.group(0) for m in _PLACEHOLDER_RE.finditer(text) if m.group(0) not in allowed]
