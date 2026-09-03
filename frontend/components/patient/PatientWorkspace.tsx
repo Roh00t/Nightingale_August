@@ -8,7 +8,6 @@ import { SunshineBlock } from '@/components/glance/SunshineBlock';
 import { VoiceCapture } from '@/components/voice/VoiceCapture';
 import { DeferReasonDialog, MIN_REASON_LENGTH } from '@/components/glance/DeferReasonDialog';
 import { callAI, AIServiceError, AI_TIMEOUT_MS, type AIFailureKind } from '@/lib/ai_client';
-import { AITimeoutFallback, OfflineModeBadge } from '@/components/ui/AITimeoutFallback';
 import { deriveOfflineFindings, offlineCoverageNote } from '@/lib/offline_summary';
 import { patientSafeGlanceCache } from '@/lib/types';
 import { TimelineView } from '@/components/timeline/TimelineView';
@@ -16,6 +15,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { CarePlanCard } from '@/components/patient/CarePlanCard';
+import { AIActionsCard } from '@/components/patient/AIActionsCard';
+import { DegradedAIPanel } from '@/components/patient/DegradedAIPanel';
 import { useAppStore } from '@/lib/stores/app-store';
 import { isApprovedForPatient } from '@/lib/patient_visibility';
 import { toast } from 'sonner';
@@ -31,7 +33,7 @@ import type {
   ChangeSinceLastVisit,
   CarePlanItem,
 } from '@/lib/types';
-import { Sparkles, FileText, Heart, Loader2, MessageSquare, Send, X, AlertTriangle } from 'lucide-react';
+import { FileText, Heart, Loader2, MessageSquare, Send, X, AlertTriangle } from 'lucide-react';
 
 const CareNoteEditor = dynamic(
   () => import('@/components/editor/CareNoteEditor').then((mod) => ({ default: mod.CareNoteEditor })),
@@ -1625,47 +1627,12 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
               evidence of absence — and a clinician reading a clean Glance View has no
               way to tell the difference unless told. */}
           {conflictsDegraded && (
-            <>
-              <AITimeoutFallback
-                kind={conflictsDegraded}
-                onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
-              />
-
-              {/* Rule-derived findings, shown ONLY while the AI is unavailable. Every
-                  line is a threshold applied to a value already in the record — no
-                  model, no inference.
-
-                  Why this rather than an empty panel: an empty "critical flags" list
-                  does not read as "we could not check", it reads as "there are none".
-                  A clinician who trusts that panel would be handed a false negative
-                  by an infrastructure failure nobody told them about. */}
-              <div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold">Findings while AI is unavailable</p>
-                  <OfflineModeBadge />
-                </div>
-                {offlineFindings.length > 0 ? (
-                  <ul className="space-y-1.5">
-                    {offlineFindings.map((f) => (
-                      <li key={f.text} className="text-xs">
-                        <span className={f.risk === 'critical' || f.risk === 'high'
-                          ? 'font-semibold text-destructive' : 'text-foreground'}>
-                          {f.text}
-                        </span>
-                        <span className="block text-[11px] text-muted-foreground">{f.basis}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    No threshold rule matched a stored value.
-                  </p>
-                )}
-                <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-border pt-1.5">
-                  {offlineCoverageNote(entries)}
-                </p>
-              </div>
-            </>
+            <DegradedAIPanel
+              kind={conflictsDegraded}
+              findings={offlineFindings}
+              coverageNote={offlineCoverageNote(entries)}
+              onRetry={() => { setConflictsDegraded(null); setConflictsChecked(false); }}
+            />
           )}
 
           {/* Sunshine disclosure sits above everything: open actions, how much
@@ -1728,53 +1695,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           {/* 2-column layout below editor: Care Plan | AI Actions */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Care Plan */}
-            <Card>
-              <CardContent className="pt-4 pb-3">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold">Care Plan</h3>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${(careNote.glance_cache.care_plan_score || 0) >= 50 ? 'bg-primary/10 text-primary' : 'bg-red-50 text-red-600'}`}
-                  >
-                    {careNote.glance_cache.care_plan_score || 0}%
-                  </Badge>
-                </div>
-                {/* Progress bar */}
-                <div className="w-full bg-secondary rounded-full h-1.5 mb-3 overflow-hidden">
-                  <div
-                    className={`h-1.5 rounded-full transition-all duration-700 ${
-                      (careNote.glance_cache.care_plan_score || 0) >= 50 ? 'bg-primary' : 'bg-red-500'
-                    }`}
-                    style={{ width: `${Math.min(careNote.glance_cache.care_plan_score || 0, 100)}%` }}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  {(careNote.glance_cache.care_plan_items || []).map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-2 text-xs cursor-pointer hover:bg-secondary/50 rounded p-1.5 -mx-1"
-                      onClick={() => handleToggleCarePlanItem(idx)}
-                    >
-                      <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center shrink-0 ${
-                        item.completed ? 'bg-primary border-primary' : 'border-red-400 bg-red-50'
-                      }`}>
-                        {item.completed && (
-                          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </div>
-                      <span className={item.completed ? 'line-through text-muted-foreground' : ''}>
-                        {item.label}
-                      </span>
-                    </div>
-                  ))}
-                  {(careNote.glance_cache.care_plan_items || []).length === 0 && (
-                    <p className="text-xs text-muted-foreground py-2">No care plan items yet.</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <CarePlanCard
+              items={careNote.glance_cache.care_plan_items || []}
+              score={careNote.glance_cache.care_plan_score || 0}
+              onToggleItem={handleToggleCarePlanItem}
+            />
 
             {/* Ambient capture — clinical view only, per the brief. */}
             {(activeRole === 'clinician' || activeRole === 'staff') && token && (
@@ -1790,40 +1715,13 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
 
             {/* AI Actions */}
             {(activeRole === 'clinician' || activeRole === 'staff') && (
-              <Card className="self-start">
-                <CardContent className="pt-4 pb-3 space-y-2">
-                  <h3 className="text-sm font-semibold mb-3">AI Actions</h3>
-                  {activeRole === 'clinician' && (
-                    <Button
-                      size="sm"
-                      className="w-full text-xs gap-2"
-                      onClick={handleRequestAISummary}
-                      disabled={loadingAction === 'ai-summary'}
-                    >
-                      {loadingAction === 'ai-summary' ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                      {loadingAction === 'ai-summary' ? 'Generating...' : 'Generate AI Summary'}
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full text-xs gap-2"
-                    onClick={handleDraftPatientMessage}
-                    disabled={generatingDraft}
-                  >
-                    {generatingDraft ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <MessageSquare className="w-3.5 h-3.5" />
-                    )}
-                    {generatingDraft ? 'Drafting...' : 'Message Patient'}
-                  </Button>
-                </CardContent>
-              </Card>
+              <AIActionsCard
+                canGenerateSummary={activeRole === 'clinician'}
+                onGenerateSummary={handleRequestAISummary}
+                summarising={loadingAction === 'ai-summary'}
+                onDraftMessage={handleDraftPatientMessage}
+                drafting={generatingDraft}
+              />
             )}
           </div>
         </div>
