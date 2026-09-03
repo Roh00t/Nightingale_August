@@ -63,7 +63,7 @@ function Stat({
 }) {
   const tones = {
     neutral: 'text-muted-foreground',
-    good: 'text-emerald-600',
+    good: 'text-green-600',
     warn: 'text-amber-600',
     bad: 'text-red-600',
   };
@@ -273,7 +273,7 @@ export function SunshineBlock({
 
         {/* ---- PHI posture ---- */}
         <div className="flex items-start gap-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" />
           <p>
             {patientView ? (
               <>

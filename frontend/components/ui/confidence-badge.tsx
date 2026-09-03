@@ -40,7 +40,7 @@ interface ConfidenceBadgeProps {
 }
 
 const bandStyles: Record<ConfidenceBand, { cls: string; Icon: React.ElementType }> = {
-  high: { cls: 'border-emerald-200/80 bg-emerald-50 text-emerald-700', Icon: ShieldCheck },
+  high: { cls: 'border-green-200/80 bg-green-50 text-green-700', Icon: ShieldCheck },
   medium: { cls: 'border-amber-200/80 bg-amber-50 text-amber-700', Icon: ShieldQuestion },
   low: { cls: 'border-red-200/80 bg-red-50 text-red-700', Icon: ShieldAlert },
 };

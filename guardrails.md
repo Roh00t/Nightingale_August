@@ -235,3 +235,27 @@ clinical actions.
 **UI-2. Never destroy user text to display an error.** A rejected save means the
 clinician's draft is the only copy in existence. Clearing, resetting or
 re-fetching over it turns a recoverable conflict into data loss.
+
+**UI-3. Red means active clinical danger. Nothing else.** Permitted uses are:
+critical flags, abnormal lab values, the maker-checker gate block, the patient's
+withdrawal notice, and the `destructive` button variant. Not permitted: task
+state, an unticked checkbox, a low completion score, a reject/undo control, or
+anything whose meaning is "not done yet".
+
+The reason is measurable rather than aesthetic. An incomplete care-plan item once
+rendered `border-red-400 bg-red-50` — louder than the critical-flags panel's own
+`border-red-200/60 bg-red-50/50` — so a clinician scanning for danger met fifteen
+red boxes meaning "not ticked" before reaching one meaning "eGFR is falling".
+That is how red stops working, and the cost lands on the one alert that mattered.
+
+Note that `destructive` is the *variant's* name, not a licence: a new alert is
+red only if it clears the list above.
+
+**UI-4. A collapsed section states its contents.** Progressive disclosure is
+admissible only where UI-1 still holds, which means two things. Every closed
+`<summary>` carries a count or status, so closed never reads as empty. And where
+an unacknowledged critical alert is present, the section renders with **no
+disclosure control at all** — not `<details open>`, which can still be clicked
+shut. The predicate is `hasActiveCriticalAlert` in `frontend/lib/clinical_alerts.ts`;
+it is the single point of failure for the whole collapse decision, which is why
+it is a tested module rather than an inline expression.

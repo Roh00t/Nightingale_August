@@ -12,7 +12,7 @@ const RISK_ORDER: Record<string, number> = {
 };
 import { Button } from '@/components/ui/button';
 import { TrustBadge } from '@/components/ui/trust-badge';
-import { getRiskColor, getConfidenceLabel } from '@/lib/utils';
+import { getRiskColor } from '@/lib/utils';
 import type { GlanceCache, Highlight, ChangeSinceLastVisit, CarePlanItem, UserRole } from '@/lib/types';
 import { ActionItems } from './ActionItems';
 import { CriticalFlags } from './CriticalFlags';
@@ -62,20 +62,6 @@ interface TopCardProps {
   /** Defer an action. Critical items require a typed reason. */
   onDeferAction?: (highlightId: string) => void;
 }
-
-const changeIcons: Record<string, React.ElementType> = {
-  new: Plus,
-  improved: TrendingUp,
-  concerning: TrendingDown,
-  unresolved: Clock,
-};
-
-const changeColors: Record<string, string> = {
-  new: 'text-neutral-600 bg-neutral-50',
-  improved: 'text-green-600 bg-green-50',
-  concerning: 'text-red-600 bg-red-50',
-  unresolved: 'text-neutral-600 bg-neutral-50',
-};
 
 export function TopCard({
   aiDegraded = false,
@@ -243,7 +229,7 @@ export function TopCard({
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">Care Plan</CardTitle>
               <span className={`text-lg sm:text-xl font-bold heading-display ${
-                carePlanScore >= 50 ? 'text-primary' : 'text-red-600'
+                carePlanScore >= 50 ? 'text-primary' : 'text-muted-foreground'
               }`}>
                 {Math.round(carePlanScore)}%
               </span>
@@ -253,7 +239,7 @@ export function TopCard({
             <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
               <div
                 className={`h-2 rounded-full transition-all duration-700 ${
-                  carePlanScore >= 50 ? 'bg-primary' : 'bg-red-500'
+                  'bg-primary'
                 }`}
                 style={{ width: `${Math.min(carePlanScore, 100)}%` }}
               />
@@ -276,7 +262,7 @@ export function TopCard({
                   {item.completed ? (
                     <CheckCircle2 className="w-4 h-4 text-primary shrink-0 mt-0.5" />
                   ) : (
-                    <XCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                    <XCircle className="w-4 h-4 text-muted-foreground/50 shrink-0 mt-0.5" />
                   )}
                   <span className={`break-words ${item.completed ? 'text-muted-foreground' : 'font-medium'}`}>
                     {item.label}
@@ -347,11 +333,11 @@ function HighlightItem({
         </Badge>
         {showActions && (
           <button
-            className="w-5 h-5 rounded bg-red-50 hover:bg-red-100 items-center justify-center transition-colors opacity-0 group-hover:opacity-100 hidden group-hover:flex"
+            className="w-5 h-5 rounded border border-border bg-background hover:bg-secondary items-center justify-center transition-colors opacity-0 group-hover:opacity-100 hidden group-hover:flex"
             onClick={(e) => { e.stopPropagation(); onReject(); }}
             title="Undo acceptance (N)"
           >
-            <X className="w-3 h-3 text-red-500" />
+            <X className="w-3 h-3 text-muted-foreground" />
           </button>
         )}
       </div>
@@ -362,7 +348,7 @@ function HighlightItem({
   if (highlight.is_accepted === false) {
     return (
       <div
-        className="flex items-center gap-2 py-1.5 px-2 rounded-md bg-red-50/50 border border-red-100 opacity-60 cursor-pointer hover:opacity-80 transition-all duration-300 group"
+        className="flex items-center gap-2 py-1.5 px-2 rounded-md bg-secondary/40 border border-border opacity-60 cursor-pointer hover:opacity-80 transition-all duration-300 group"
         onClick={onClickNavigate}
         role="button"
         tabIndex={0}
@@ -370,8 +356,8 @@ function HighlightItem({
           if (e.key === 'y' && showActions) { e.preventDefault(); onAccept(); }
         }}
       >
-        <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-        <span className="text-xs text-red-600/70 line-through line-clamp-1 flex-1">
+        <XCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <span className="text-xs text-muted-foreground line-through line-clamp-1 flex-1">
           {highlight.content_snippet}
         </span>
         {showActions && (
@@ -466,15 +452,15 @@ function HighlightItem({
           )}
           {/* Always show reject button (to allow changing decision) */}
           <button
-            className="w-7 h-7 rounded-md bg-red-50 hover:bg-red-100 flex items-center justify-center transition-colors disabled:opacity-50"
+            className="w-7 h-7 rounded-md border border-border bg-background hover:bg-secondary flex items-center justify-center transition-colors disabled:opacity-50"
             onClick={(e) => { e.stopPropagation(); onReject(); }}
             title={highlight.is_accepted === true ? "Undo acceptance (N)" : "Reject (N)"}
             disabled={loadingAction === `accept-${highlight.id}` || loadingAction === `reject-${highlight.id}`}
           >
             {loadingAction === `reject-${highlight.id}` ? (
-              <Loader2 className="w-3.5 h-3.5 text-red-600 animate-spin" />
+              <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
             ) : (
-              <X className="w-3.5 h-3.5 text-red-600" />
+              <X className="w-3.5 h-3.5 text-muted-foreground" />
             )}
           </button>
         </div>

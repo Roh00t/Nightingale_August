@@ -7,8 +7,9 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { InlineComment } from '@/components/editor/InlineComment';
 import { getRoleColor, getTrustBadge, getRelativeTime, getFreshnessAge } from '@/lib/utils';
+import { extractClinicalValues } from '@/lib/clinical_values';
 import type { TimelineEntry as TimelineEntryType, Comment, UserRole, Profile } from '@/lib/types';
-import { MessageSquare, ExternalLink, Bot, AlertTriangle, FlaskConical , Undo2 } from 'lucide-react';
+import { ChevronRight, MessageSquare, ExternalLink, Bot, AlertTriangle, FlaskConical , Undo2 } from 'lucide-react';
 
 interface TimelineEntryProps {
   entry: TimelineEntryType;
@@ -54,6 +55,8 @@ export function TimelineEntry({
   const trustBadge = getTrustBadge(entry.author_role, entry.entry_type);
   const freshnessAge = getFreshnessAge(entry.created_at);
   const isAI: boolean = entry.entry_type.startsWith('ai_');
+  const isAISummary = entry.entry_type.startsWith('ai_');
+  const keyValues = isAISummary ? extractClinicalValues(entry.content_text ?? '') : [];
   const isLabResult: boolean = entry.entry_type === 'system_event' && entry.content != null && typeof entry.content === 'object' && 'test_name' in (entry.content as object);
   const roleColor = getRoleColor(entry.author_role as UserRole);
   const metadataDirection =
@@ -170,19 +173,55 @@ export function TimelineEntry({
             </div>
           ) : null}
 
-          {/* Withdrawn state, above the content rather than replacing it: the
-              patient and any auditor need to see WHAT was withdrawn, not just
-              that something was. */}
+          {/* Withdrawn state — CARE-TEAM treatment, deliberately quieter than
+              the patient's.
+
+              THIS IS NOT THE SAME DECISION IN BOTH PLACES, and the split is the
+              point. The patient's Care Instructions card
+              (PatientWorkspace.tsx) keeps the full red block, because the
+              patient acted on the dose and has to be stopped. A clinician
+              scrolling a timeline meets every withdrawal ever issued; rendering
+              each as a red slab is how red stops meaning danger, and the
+              critical-flags panel it is competing with is a genuine one.
+
+              So here it collapses to a muted line that states the fact in words
+              and expands on click. What is NOT sacrificed: the entry stays
+              visible, stays struck through, and the reason stays reachable —
+              guardrails UI-1 forbids signalling this by colour alone or by an
+              absence, not by choosing a calmer colour.
+
+              Pinned by test_audit_boundaries.py, which asserts the SPLIT, so a
+              future change that unifies the two treatments fails. */}
           {entry.is_retracted && (
-            <div className="mb-2 rounded-md border-2 border-red-600 bg-red-50 dark:bg-red-950/40 px-3 py-2">
-              <span className="inline-block rounded bg-red-600 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
-                [WITHDRAWN BY CARE TEAM]
-              </span>
-              {entry.retraction_reason && (
-                <p className="mt-1.5 text-sm font-medium text-red-700 dark:text-red-400">
-                  Reason: {entry.retraction_reason}
-                </p>
-              )}
+            <details className="group mb-2">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded border border-border bg-secondary/50 px-2 py-1 text-xs text-muted-foreground hover:bg-secondary [&::-webkit-details-marker]:hidden">
+                <ChevronRight aria-hidden className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+                <span className="font-medium uppercase tracking-wide">Withdrawn by care team</span>
+                <span className="text-muted-foreground/70">— click to view</span>
+              </summary>
+              <p className="mt-1.5 px-2 text-xs font-medium text-foreground">
+                {entry.retraction_reason
+                  ? `Reason: ${entry.retraction_reason}`
+                  : 'No reason was recorded.'}
+              </p>
+            </details>
+          )}
+
+          {/* Key values, for AI summaries only.
+              A strip ABOVE the paragraph, never a reformatting of it: the
+              paragraph is sliced by character offset to render provenance
+              highlights, so touching the string silently breaks them. See
+              lib/clinical_values.ts. */}
+          {isAISummary && keyValues.length > 0 && !entry.is_retracted && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {keyValues.map((v) => (
+                <span
+                  key={v.text}
+                  className="rounded border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[11px] font-medium text-foreground"
+                >
+                  {v.text}
+                </span>
+              ))}
             </div>
           )}
 
@@ -191,7 +230,8 @@ export function TimelineEntry({
             {isLabResult ? (
               <LabResultsDisplay content={entry.content as unknown as LabResultContent} metadata={entry.metadata} />
             ) : entry.content_text ? (
-              <p className={entry.is_retracted ? 'line-through decoration-2 decoration-red-600 opacity-70' : undefined}>
+              <p className={entry.is_retracted ? 'line-through decoration-2 decoration-muted-foreground opacity-60' : undefined}>
+                {/* content_text passes through UNCHANGED — the offsets depend on it. */}
                 <SpanHighlightedText text={entry.content_text} span={isHighlighted ? highlightedSpan : null} />
               </p>
             ) : (

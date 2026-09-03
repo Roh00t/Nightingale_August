@@ -349,7 +349,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
         </div>
 
         <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-          <ShieldCheck className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600" />
+          <ShieldCheck className="mt-0.5 h-3 w-3 shrink-0 text-green-600" />
           Audio is transcribed with speaker labels, then names, NRIC and phone
           numbers are removed before any AI model sees the text.
         </p>
@@ -386,7 +386,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
                     </Badge>
                   )}
                   {(result.redaction.total_entities ?? 0) > 0 && (
-                    <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
+                    <Badge variant="secondary" className="bg-green-50 text-[10px] text-green-700">
                       {result.redaction.total_entities} identifiers removed
                     </Badge>
                   )}
@@ -398,7 +398,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
                 </>
               )}
               {result.filed && (
-                <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
+                <Badge variant="secondary" className="bg-green-50 text-[10px] text-green-700">
                   {isPatient ? 'sent to your care team' : 'filed to timeline'}
                 </Badge>
               )}

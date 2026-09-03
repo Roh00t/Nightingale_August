@@ -341,6 +341,38 @@ class TestPatientViewShowsOnlyApprovedContent:
         assert "[WITHDRAWN BY CARE TEAM]" in ws
         assert "line-through" in ws, "withdrawn text must be struck through, not hidden"
 
+    def test_the_two_withdrawal_treatments_are_deliberately_different(self):
+        """The patient's is loud; the clinician's is quiet. That is the design.
+
+        A clinician scrolling a timeline meets every withdrawal ever issued, and
+        rendering each as a red slab is how red stops meaning danger — it has to
+        compete with the critical-flags panel, which is a genuine one. The
+        patient sees one message and has to be stopped from acting on it.
+
+        This test exists so a future "let's make these consistent" change fails
+        loudly rather than silently re-opening the 3 Sep bug from the other
+        direction. Consistency is the wrong goal here.
+        """
+        ws = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        te = (REPO / "frontend/components/timeline/TimelineEntry.tsx").read_text()
+
+        # Patient side: full red, uppercase, imperative.
+        assert "bg-red-600" in ws, "the patient's withdrawal badge must stay red"
+        assert "Do not follow this message." in ws, (
+            "the patient needs an instruction, not just a label"
+        )
+
+        # Clinician side: muted and collapsed, but never silent or hidden.
+        assert "bg-red-600" not in te, (
+            "the clinician timeline's withdrawal treatment should be muted; "
+            "red is reserved for active clinical danger"
+        )
+        assert "Withdrawn by care team" in te, (
+            "muted is not the same as unstated — guardrails UI-1 requires words"
+        )
+        assert "line-through" in te, "the withdrawn entry must still be struck through"
+        assert "retraction_reason" in te, "the reason must remain reachable"
+
     def test_seeded_patient_visible_row_does_not_claim_a_human_approved_it(self):
         """The seed stamps a verdict so the demo timeline is not empty. It must
         not also claim a clinician signed off, because nobody did.
