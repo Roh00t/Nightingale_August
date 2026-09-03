@@ -8,7 +8,9 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**480 automated tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**480 automated Python tests, 0 failures · 50 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+
+> macOS: the Python suite passes cleanly only with raised SysV shared memory limits — see [System Prerequisites](#system-prerequisites--shared-memory-macos).
 
 > **Compliance posture — read this before quoting the security sections.**
 > This is a prototype built on **synthetic data only**. The design is
@@ -171,9 +173,10 @@ words, because the alternative is worse than useless:
 
 | State | What the clinician sees |
 |---|---|
-| AI unavailable | **Offline Mode (Rule-Derived)** — *"Absence of a flag does not imply absence of clinical concern."* |
+| AI unavailable | **Offline Mode (Rule-Derived)** — *"Absence of a flag does not imply absence of clinical concern."* Renders on the AI failing, **independently of the contradiction count** |
 | Save rejected (OCC) | **SAVE BLOCKED: Another user updated this note.** *Draft preserved locally.* |
-| Retracted message | Solid red **[WITHDRAWN BY CARE TEAM]**, struck through, verbatim reason below |
+| Retracted message — **patient** | Solid red **[WITHDRAWN BY CARE TEAM]**, struck through, *"Do not follow this message"*, verbatim reason |
+| Retracted message — **clinician** | Muted collapsed line, expandable, struck through, reason retained — see [Retraction is split by role](#retraction-is-split-by-role) |
 | Stale provenance | Solid orange **[SOURCE EDITED — VERIFY NOTE]** |
 
 The governing case is the first row. An empty critical-flags panel reads as
@@ -184,6 +187,108 @@ not used for any clinical state.
 **A rejected save never clears the editor.** The clinician's draft is the only
 copy in existence at that moment; destroying it to display an error turns a
 recoverable conflict into data loss.
+
+### Cognitive load: two columns, reserved red, and disclosure that cannot hide danger
+
+The clinician workspace was a three-column grid with everything expanded at once.
+The changes below target scanning cost specifically, and each one is constrained
+by the rule above it — a UI that reduces clutter by hiding a critical finding is
+a net clinical loss.
+
+**Two columns, not three.** A locked clinical summary (`xl:col-span-4`) beside an
+active workspace (`xl:col-span-8`). The summary scrolls independently rather than
+moving with the note — "locked" means it does not follow the editor, not that it
+cannot scroll, because clipped clinical content is an absence and absences are
+what the rule above forbids.
+
+**No tabs. `@radix-ui/react-tabs` was removed from `package.json` entirely.**
+A tabbed Care Note / Care Plan was the obvious way to stop the clinician
+scrolling past drafting tools to reach the regimen, and it was rejected twice
+over:
+
+- *Working memory.* The regimen is referenced **while** drafting. Mutual
+  exclusion is the wrong model for two things you read together.
+- *Data loss.* Radix unmounts inactive panels, and `CareNoteEditor` destroys its
+  Hocuspocus provider on unmount ([`CareNoteEditor.tsx:166`](frontend/components/editor/CareNoteEditor.tsx)).
+  With the collab server down — the realistic clinic case, the one the amber
+  **"Local Only"** badge exists for — switching tabs would destroy the only copy
+  of the clinician's text. A tab panel that may never unmount is not a tab; it is
+  a worse split-pane with an extra click.
+
+Instead the two sit **side by side**, and removing the tab removes the unmount
+lifecycle from the picture entirely rather than defending against it. The editor
+pane uses the browser's own `resize-x` drag handle: no dependency, no React
+state. `VoiceCapture` stays permanently mounted for the same class of reason — it
+releases the microphone on unmount, so anything that unmounts it silently kills
+an ambient capture that cannot be re-recorded.
+
+**Measure.** The editor set `max-w-none`, which explicitly *disables* the prose
+measure; at eight columns that is a very long line. It is now `max-w-[68ch]`.
+
+**Progressive disclosure, with a hard floor.** *Sunshine disclosure*, *At a
+Glance* and *Changes Since Last Visit* are native `<details>` — no accordion
+dependency, no state, and browser find-in-page still reaches text inside a closed
+one. Two constraints make collapsing admissible at all:
+
+- Every closed `<summary>` carries a **count** (`"3 findings · 1 critical"`, or
+  `"not checked — AI unavailable"`). A closed section is an absence, and an
+  absence must never read as *"there is nothing here"*.
+- When [`hasActiveCriticalAlert`](frontend/lib/clinical_alerts.ts) is true, the
+  section renders as a plain `<section>` with **no disclosure control at all** —
+  deliberately not `<details open>`, which still has a triangle to click. A
+  critical finding must not be collapsible even on purpose.
+
+That predicate is the single point of failure for the whole decision, which is
+why it is a tested module rather than an inline expression: 22 tests,
+mutation-verified against three specific breaks including keying on
+`is_accepted !== false` instead of `== null`.
+
+**Red is reserved for active clinical danger** (`guardrails.md` UI-3). It was
+not: an unticked care-plan checkbox rendered `border-red-400 bg-red-50`, *louder*
+than the critical-flags panel's own `border-red-200/60 bg-red-50/50`. A clinician
+scanning for danger met fifteen red boxes meaning "not ticked yet" before
+reaching one meaning "eGFR is falling", and the cost of that lands on the one
+alert that mattered.
+
+Red now appears only on: critical flags, abnormal labs, the maker-checker gate
+block, the patient's withdrawal notice, and the `destructive` button variant.
+Incomplete is neutral; rejecting an AI suggestion is a muted outline, because
+disagreeing with the model is not a clinical danger. `TopCard` — the Glance View
+— now contains **zero** red; the genuine red it displays comes from the
+`CriticalFlags` component it renders. Pinned by tests that assert both halves:
+that the decorative uses are gone **and** that the genuine ones survive, so an
+over-correction fails too.
+
+<a id="retraction-is-split-by-role"></a>
+**Retraction is split by role, and the split is the design.** A clinician
+scrolling a timeline meets every withdrawal ever issued; rendering each as a red
+slab is precisely how red stops working. A patient sees one message and has to be
+stopped from acting on it.
+
+| Audience | Treatment | Why |
+|---|---|---|
+| **Patient** | Full red block, `[WITHDRAWN BY CARE TEAM]`, *"Do not follow this message"*, struck through, verbatim reason | They acted on the dose. This is a countermand, not a status |
+| **Clinician** | Muted collapsed line, expandable, struck through, reason retained | Volume. Never hidden and never silent — UI-1 forbids signalling by absence, not choosing a calmer colour |
+
+A boundary test asserts **the split** rather than a global rule, so a future
+"let us make these consistent" change fails loudly instead of silently
+re-opening the leak from the other direction.
+
+**The offline banner was decoupled from the conflict count** — the most important
+fix in this work, and a live bug rather than a refactor. `TopCard` rendered
+*"Offline Mode (Rule-Derived)"* **inside** `{conflictCount > 0 && …}`. When the AI
+is unreachable the contradiction check never runs, so `conflictCount` is `0`, so
+the banner never appeared **in the one scenario it exists for**. A clinician
+looked at a clean Glance View during an outage and read it as *"nothing found"*
+rather than *"not checked"* — opposite clinical actions.
+
+It now renders on `aiDegraded` alone, and the rule-derived panel sits **outside**
+every collapsible, because an outage that can be folded away is an outage nobody
+sees. Two structural tests pin it: one that the banner precedes the conflict
+block, one that it is not nested inside it — the first alone would pass if it were
+re-nested the other way. Both were mutation-verified by restoring the original
+nesting, and the fix was confirmed in a browser with the AI service stopped and
+zero conflicts present.
 
 ### Feature degradation — "Local Only" mode
 
@@ -372,6 +477,108 @@ strips `top_items` and `changes_since_last_visit` from `care_notes.glance_cache`
 on every write, because the display object that carries them for clinicians is
 also a write source, and stripping in application code has to be remembered at
 every call site.
+
+### UI telemetry — PHI-safe by schema, not by promise
+
+The progressive disclosure above is a **bet**: that non-critical summary detail
+may sit behind a labelled count. Telemetry exists to falsify that bet rather than
+argue about it — if clinicians expand *At a Glance* within three seconds of every
+page load, default-closed is costing them time and the data says so.
+
+**First-party and self-hosted, not a third-party analytics tool.** No BAA or DPA
+exists with any vendor, and HIPAA and Singapore's PDPA both require one before
+PHI-adjacent data leaves the boundary. A "PHI-safe payload" is not the same as
+"not personal data": at single-clinic scale, one clinician on shift means one
+session, and timing alone is re-identifying. A browser-side SDK would also be the
+only unguarded egress path in a system where every model call funnels through one
+chokepoint that raises rather than repairs. Accepted tradeoff: no funnels, no
+cohorts, no session replay, and someone has to read the dashboard.
+
+**A separate table from `interaction_log`, for a clinical-safety reason.** That
+table feeds the self-learning importance loop, and `importance.py` scores each row
+as `ACTION_TYPE_WEIGHTS.get(action_type, 0.3)` — an **unknown** action type
+defaults to **+0.3, a positive engagement weight**. Writing `expand` / `collapse`
+rows there would have the ranking model read UI fidgeting as clinical
+endorsement. Worse, the loop reads only the **200 most recent rows**, so
+high-frequency UI events would flush genuine accept/reject signal out of the
+window entirely. A clinician toggling an accordion forty times in a shift would
+both promote arbitrary highlights and erase the loop's actual evidence.
+
+**What the schema makes impossible:**
+
+| Control | Mechanism |
+|---|---|
+| No identity | `ui_telemetry` has **no `user_id`, `patient_id` or `care_note_id` column**. The brief asked for an ephemeral session id behind an audited mapping table; this never writes the mapping, so there is nothing to protect. `clinic_id` + `user_role` answers every dashboard question, and a row cannot be re-joined to a clinician even by an admin |
+| No free text | `component_id` and `action` are `CHECK`-constrained allowlists. A drug name as a component id **fails the insert** rather than being stored. Ids are literals from a TypeScript union — never built from a prop, a label, or element text, which is the path by which PHI reaches an analytics column |
+| No forged attribution | `clinic_id` and `user_role` are stamped by a trigger, so a client claiming to be an admin in another clinic is overwritten |
+| Bounded dimensions | `dwell_ms` and `value_pct` are range-checked; the emitter clamps rather than drops, since a capped event still says *"they opened it"* |
+| Append-only | No `UPDATE` or `DELETE` policy exists. A row that can be edited after the fact is not evidence |
+| Read-restricted | Admins read their own clinic only, through views that set `security_invoker` — without which a view runs as its **owner** and hands every clinic's rows to any reader |
+
+Verified against a live seeded database: an off-allowlist `component_id` is
+rejected; a clinician claiming `admin` in another clinic has both columns
+overwritten; an admin of clinic 1 sees their data and an admin of clinic 2 sees
+zero rows through the same view; a clinician sees zero.
+
+> **A trap worth knowing about.** Non-admins may **write** telemetry but not read
+> it. `INSERT … RETURNING` therefore also performs a `SELECT`, fails the read
+> policy, and the whole statement errors with *"new row violates row-level
+> security policy"* — which reads like the write was rejected. In `supabase-js`
+> that means `.insert(row)` and never `.insert(row).select()`. Since telemetry is
+> fire-and-forget, adding `.select()` would break every write with **no visible
+> symptom**, and an empty dashboard reads as *"nobody expands anything"* rather
+> than *"nothing was ever recorded"*.
+
+#### `SECURITY DEFINER` made two stamping triggers inert
+
+Both `stamp_interaction_log()` and `stamp_ui_telemetry()` opened with:
+
+```sql
+IF current_user NOT IN ('authenticated', 'anon') THEN RETURN NEW; END IF;
+```
+
+intending *"if this is a service-role or owner call, leave the row alone"*. But
+both are `SECURITY DEFINER`, and inside such a function **`current_user` is the
+function owner, not the caller**. The condition was always true, the early return
+always taken, and neither trigger ever stamped anything.
+
+The consequence was on **`interaction_log`**, which was already live.
+Demonstrated on a seeded database as an authenticated clinician:
+
+```sql
+INSERT INTO interaction_log (user_id, user_role, action_type, ..., target_metadata)
+VALUES (auth.uid(), 'admin', 'accept', ...,
+        '{"keywords":["x"],"secret_note":"Patient Alice Wong has HIV"}');
+
+-- stored_role:     admin   -- a role the caller does not hold
+-- stored_metadata: kept verbatim, free-text PHI included
+```
+
+So the metadata allowlist documented as *"server-side authority over what the
+learning loop reads"* stripped nothing — arbitrary keys, including free text,
+persisted in a column the PHI posture treats as metadata-only — and `user_role`
+was caller-supplied, making the loop's view of who did what forgeable by its own
+subjects. After the fix the same statement stores role `clinician` and metadata
+`{"keywords": ["x"]}`.
+
+**Two things this was *not*, stated because overclaiming a fix is its own
+failure:**
+
+- **Not a privilege-escalation vector.** Forging `user_role` in a log table
+  grants no privileges; it poisons attribution and admits PHI. The actual
+  privilege-escalation control — `pin_profile_identity_columns()`, which blocks a
+  user changing their own `role` or `clinic_id` — uses the same guard but is
+  **not** `SECURITY DEFINER`, so its `current_user` really is the caller and it
+  works as documented. Confirmed via `pg_proc.prosecdef` rather than by
+  resemblance.
+- **Not a telemetry exposure.** `ui_telemetry` was created and fixed in the same
+  commit; it never ran with the broken guard.
+
+The fix guards on `auth.uid() IS NULL` instead. That asks the question actually
+intended — *is there an end-user JWT behind this call?* — and is unaffected by
+`SECURITY DEFINER`, because it reads the request GUC rather than the executing
+role. Service-role and seed inserts still pass through untouched, which is what
+the original guard was for.
 
 ### API resilience
 
@@ -582,7 +789,9 @@ while breaking every authenticated endpoint.
 ### 6. Tests
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 480 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 480 passed, 0 failures
+#   macOS: requires the sysctl under System Prerequisites, or 83 of these
+#   ERROR at setup on initdb rather than failing
 ```
 
 ```bash
