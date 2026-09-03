@@ -98,9 +98,22 @@ export function describeGlanceLoad({
 }: CriticalAlertInputs): string {
   if (aiDegraded) return 'not checked — AI unavailable';
 
+  // Counted from BOTH sources, matching hasActiveCriticalAlert.
+  //
+  // Found by looking at the rendered page: a seeded record showed
+  // "eGFR declining: 62 -> 45 over 6 months  CRITICAL" while this subtitle read
+  // only "27 findings". The critical item lived in glance_cache.top_items, which
+  // hasActiveCriticalAlert checks and this function did not — so the section
+  // correctly force-opened while its own label failed to say why.
+  //
+  // Two functions disagreeing about what "critical" means is exactly the drift
+  // UI-1 is meant to prevent, and it is invisible to a typecheck.
+  const criticalTopItems = (glanceCache.top_items ?? []).filter(
+    (i) => i.risk_level === 'critical' && i.status !== 'resolved',
+  ).length;
   const critical = highlights.filter(
     (h) => h.risk_level === 'critical' && h.is_accepted !== false,
-  ).length;
+  ).length + criticalTopItems;
   const shown = highlights.filter((h) => h.is_accepted !== false).length;
   const items = (glanceCache.top_items ?? []).length;
 

@@ -167,3 +167,47 @@ describe('describeGlanceLoad', () => {
     })).toBe('1 item');
   });
 });
+
+describe('describeGlanceLoad and hasActiveCriticalAlert agree', () => {
+  // Found on the rendered page: the section force-opened (correct) while its
+  // subtitle said only "27 findings" (wrong). The critical lived in top_items,
+  // which only one of the two functions was looking at.
+  const criticalInTopItemsOnly = {
+    ...base,
+    highlights: [hl({ risk_level: 'info' })],
+    glanceCache: glance({
+      top_items: [{ type: 'risk', text: 'eGFR declining 62 -> 45', risk_level: 'critical' }],
+    }),
+  };
+
+  it('force-opens when the only critical is in top_items', () => {
+    expect(hasActiveCriticalAlert(criticalInTopItemsOnly)).toBe(true);
+  });
+
+  it('and SAYS SO in the subtitle', () => {
+    expect(describeGlanceLoad(criticalInTopItemsOnly)).toContain('1 critical');
+  });
+
+  it('does not double-count a critical present in both sources', () => {
+    // Distinct sources, so two entries is genuinely two things to look at.
+    const both = {
+      ...base,
+      highlights: [hl({ risk_level: 'critical' })],
+      glanceCache: glance({
+        top_items: [{ type: 'risk', text: 'x', risk_level: 'critical' }],
+      }),
+    };
+    expect(describeGlanceLoad(both)).toContain('2 critical');
+  });
+
+  it('ignores a resolved critical top_item, as the alert predicate does', () => {
+    const resolved = {
+      ...base,
+      glanceCache: glance({
+        top_items: [{ type: 'risk', text: 'x', risk_level: 'critical', status: 'resolved' }],
+      }),
+    };
+    expect(hasActiveCriticalAlert(resolved)).toBe(false);
+    expect(describeGlanceLoad(resolved)).not.toContain('critical');
+  });
+});
