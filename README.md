@@ -423,6 +423,61 @@ brew install supabase/tap/supabase postgresql@14
 
 ---
 
+### System Prerequisites — shared memory (macOS)
+
+**macOS developers running the local Supabase stack alongside the Python pytest
+suite must increase their SysV shared memory limits to prevent Postgres `initdb`
+crashes during test execution.** Run:
+
+```bash
+sudo sysctl -w kern.sysv.shmall=65536 kern.sysv.shmmax=16777216
+```
+
+**before running the test harness.**
+
+Why it is needed: the pytest suite builds its own throwaway PostgreSQL cluster
+(`tests/support/pgharness.py`) rather than reusing the Supabase one, so that
+access-control assertions run as a non-superuser — a superuser bypasses RLS and
+every such assertion would pass while proving nothing.
+
+macOS ships a SysV shared memory allowance of **1024 pages — 4 MB in total**,
+which is below what `initdb` needs. This is not resource contention with the
+Supabase stack: those containers have their own IPC namespace and consume no
+host SysV segments at all, so `ipcs -m` reads empty while `initdb` still fails.
+The host default is simply too small on its own. Raising it is a one-line fix
+that the CLI cannot apply for you, because it needs `sudo`.
+
+The suite reports:
+
+```
+child process exited with exit code 1
+initdb: removing contents of data directory "/var/folders/.../ng-pgdata-XXXXXXXX"
+RuntimeError  tests/support/pgharness.py:139
+```
+
+Read that carefully, because the failure mode is misleading in two ways:
+
+- It surfaces as **dozens of `ERROR at setup`**, not as test failures. Every test
+  in the seven suites that need a live cluster errors identically
+  (`test_rbac_scope`, `test_revision_history`, `test_self_learning_importance`,
+  `test_highlight_provenance`, `test_concurrent_edits`,
+  `test_adversarial_safety`, `test_meta_rls_sanity`). The remaining ~397 tests
+  pass, so the run looks like a large regression rather than a resource limit.
+- It is **not persistent**. `sysctl -w` does not survive a reboot, so a suite
+  that was green yesterday errors today with no change to the code. If a run
+  suddenly produces a wall of `initdb` errors, check this before reading a diff.
+
+Verify the current values:
+
+```bash
+sysctl kern.sysv.shmall kern.sysv.shmmax
+```
+
+To make it survive reboots, add the same two settings to `/etc/sysctl.conf`.
+Linux and Windows/WSL are unaffected; their defaults are already sufficient.
+
+---
+
 ### 1. Start the local control plane
 
 ```bash
@@ -527,7 +582,7 @@ while breaking every authenticated endpoint.
 ### 6. Tests
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 460 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 480 passed
 ```
 
 ```bash
@@ -604,6 +659,7 @@ Every one of these was hit during development. Check here first.
 | `npm run dev:ai` → `ModuleNotFoundError: fastapi` | Bare `uvicorn` resolved to system Python | Use `.venv/bin/uvicorn` |
 | `pytest` → `Form data requires "python-multipart"` | Missing upload dependency | `.venv/bin/pip install python-multipart` |
 | `pytest` → suites skip with "PostgreSQL binaries not on PATH" | No `initdb`/`pg_ctl` | `brew install postgresql@14` and add to PATH |
+| `pytest` → dozens of `ERROR at setup`, `initdb: removing contents of data directory` | macOS SysV shared memory limit too low for `initdb` | `sudo sysctl -w kern.sysv.shmall=65536 kern.sysv.shmmax=16777216` — see [System Prerequisites](#system-prerequisites--shared-memory-macos). Not persistent across reboots. |
 | Tests fail `supabase_url is required` | Stale `conftest` expectations | Should not happen — the suites build their own DB; re-pull |
 | `/ready` shows `redaction_engine: false` | spaCy model missing | `.venv/bin/python -m spacy download en_core_web_sm` |
 | Editor shows amber **"Local Only"** | No collab JWT secret | Expected without secrets; not a failure |
