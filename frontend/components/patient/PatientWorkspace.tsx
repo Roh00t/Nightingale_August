@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { CarePlanCard } from '@/components/patient/CarePlanCard';
 import { AIActionsCard } from '@/components/patient/AIActionsCard';
 import { DegradedAIPanel } from '@/components/patient/DegradedAIPanel';
+import { hasCriticalConflict } from '@/lib/clinical_alerts';
 import { useAppStore } from '@/lib/stores/app-store';
 import { isApprovedForPatient } from '@/lib/patient_visibility';
 import { toast } from 'sonner';
@@ -1660,7 +1661,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             loadingAction={loadingAction}
             onToggleCarePlanItem={handleToggleCarePlanItem}
             conflictCount={conflictCount}
-            hasCriticalConflict={conflicts.some((c) => c.severity === 'critical')}
+            hasCriticalConflict={hasCriticalConflict(conflicts)}
             onReviewConflicts={handleReviewConflicts}
             onAssignAction={handleAssignAction}
             onCompleteAction={handleCompleteAction}
