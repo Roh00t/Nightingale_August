@@ -258,3 +258,92 @@ class TestProvenanceStalenessBoundary:
             assert marker not in src, (
                 "a side-by-side comparison now exists — scenario 16 says it does not"
             )
+
+
+class TestPatientViewShowsOnlyApprovedContent:
+    """The patient portal leak of 3 Sep 2026, pinned.
+
+    A patient's own portal was rendering clinician-grade pipeline output — ASR
+    confidence, entity counts, the mock-transcript badge and the full
+    speaker-labelled transcript — alongside a care instruction reading
+    "Lisinopril to 10 0000000mg daily" that no human had ever approved.
+
+    Two separate defects wearing one screenshot:
+
+      1. The capture result panel was not role-aware.
+      2. `visibility = 'patient_visible'` was treated as approval. It is not.
+         Rows predating the maker-checker gate carry no verdict and rendered
+         identically to signed-off ones.
+
+    These are STRUCTURAL assertions over source, not render tests. This repo has
+    no harness that mounts the portal, so what is pinned here is that the gate
+    is present in the code — not that a browser honours it. The plan's manual
+    login check remains the only thing that proves the rendered page.
+    """
+
+    def test_voice_capture_result_panel_is_role_gated(self):
+        src = (REPO / "frontend/components/voice/VoiceCapture.tsx").read_text()
+        assert "const isPatient = userRole === 'patient'" in src, (
+            "VoiceCapture must derive a patient flag to gate its result panel"
+        )
+        # The diagnostics that leaked, each behind the gate.
+        for probe in ("ASR confidence", "identifiers removed", "mock transcript"):
+            assert probe in src, f"expected {probe!r} to still exist for clinicians"
+        assert "{!isPatient && (" in src, "diagnostics chips are not gated"
+        # The raw diarized transcript block.
+        assert "Speaker-labelled transcript" in src
+        gate_at = src.index("{!isPatient && (\n            <details")
+        assert gate_at > 0, "the speaker transcript block is not behind !isPatient"
+
+    def test_patients_still_keep_the_recorder(self):
+        """A fix that silently deletes patient voice capture is a worse outage.
+
+        `patient_session` capture is a designed feature and /api/ai/transcribe
+        authorises the patient role for it. Only the *rendering* of pipeline
+        output changed.
+        """
+        src = (REPO / "frontend/components/voice/VoiceCapture.tsx").read_text()
+        assert "patient_session" in src
+        router = (REPO / "ai-service/routers/transcribe.py").read_text()
+        assert "patient" in router, "patient must remain authorised to transcribe"
+
+    def test_patient_timeline_filters_on_approval_not_visibility(self):
+        rule = (REPO / "frontend/lib/patient_visibility.ts").read_text()
+        assert "patient_gate_verdict === 'passed'" in rule
+        assert "kind === 'retraction'" in rule, (
+            "retraction notices carry no verdict and must not be filtered out"
+        )
+        assert "entry.is_retracted" in rule, (
+            "a retracted entry must stay visible, struck through, with its reason"
+        )
+        ws = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        assert "isApprovedForPatient" in ws, "the patient branch does not apply the rule"
+
+    def test_the_rule_is_documented_as_not_a_security_control(self):
+        """Overclaiming this filter would be the dangerous outcome.
+
+        It stops unapproved rows being rendered. What stops them being created
+        is `AND visibility = 'internal'` on the care-team INSERT policies. If
+        that caveat is ever deleted from the module, someone will mistake a
+        client-side predicate for a boundary.
+        """
+        rule = (REPO / "frontend/lib/patient_visibility.ts").read_text()
+        assert "NOT A SECURITY CONTROL" in rule
+        assert "visibility = 'internal'" in rule
+
+    def test_patient_card_renders_the_withdrawn_badge(self):
+        """Found while fixing the leak: the clinician timeline had rendered
+        [WITHDRAWN BY CARE TEAM] since retraction shipped, and the patient's own
+        Care Instructions card had not — so the one person who acted on a wrong
+        dose was the one person not told it was withdrawn.
+        """
+        ws = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        assert "[WITHDRAWN BY CARE TEAM]" in ws
+        assert "line-through" in ws, "withdrawn text must be struck through, not hidden"
+
+    def test_seeded_patient_visible_row_does_not_claim_a_human_approved_it(self):
+        """The seed stamps a verdict so the demo timeline is not empty. It must
+        not also claim a clinician signed off, because nobody did.
+        """
+        sql = (REPO / "supabase/migrations/001_foundation.sql").read_text()
+        assert '"patient_gate_verdict": "passed", "human_approved": false, "seeded": true' in sql

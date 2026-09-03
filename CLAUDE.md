@@ -274,6 +274,12 @@ cd ai-service && .venv/bin/python -m pytest tests/test_telegram_messaging.py -v
 - npm workspaces hoist to the root `node_modules`. Empty `frontend/node_modules` is correct.
 - `README.md` references `.env.example` and `supabase/seed.sql`. Neither exists.
 - The versions table is `note_versions`. The brief calls it `versions`. See §3.
+- **Migration filenames must carry a full 14-digit timestamp.** The Supabase CLI
+  keys `schema_migrations` on the leading digit-run, so `20260901_a.sql` and
+  `20260901_b.sql` both resolve to version `20260901` and the second insert dies
+  on the primary key. Seven files once collapsed into two keys and `supabase
+  start` failed at migration 3 of 8 — on the very command the README and demo
+  script open with. Renamed to `YYYYMMDDHHMMSS_name.sql` on 3 Sep 2026.
 
 ---
 
@@ -313,7 +319,7 @@ dangerous than a missing one.
 - **Status:** SURVIVES
 - **Location:** Primary — `supabase/migrations/001_foundation.sql:296`
   (`get_user_clinic_id()`, a `SECURITY DEFINER` read of `profiles`). Secondary —
-  `supabase/migrations/20260901_multi_clinic_rls.sql:121`, `RESTRICTIVE` tenant
+  `supabase/migrations/20260901000003_multi_clinic_rls.sql:121`, `RESTRICTIVE` tenant
   policies over a denormalised `clinic_id` filled by trigger.
 - **How many patients leak if that line fails:** With one barrier it would be
   every patient in every other clinic. There are two independent ones: the
@@ -438,7 +444,7 @@ dangerous than a missing one.
 
 - **Status:** SURVIVES
 - **Location:** CRDT path — Hocuspocus/Yjs merges character-level operations.
-  Fallback path — `supabase/migrations/20260901_care_notes_version.sql:46`
+  Fallback path — `supabase/migrations/20260901000001_care_notes_version.sql:46`
   (`save_care_note_yjs`, compare-and-swap), called at
   `frontend/components/editor/CareNoteEditor.tsx:415`, banner at `:696`.
 - **Database state at 09:15:** With collab up, both edits are merged — no lost
@@ -480,6 +486,41 @@ dangerous than a missing one.
 - **Already-sent copy:** Retraction marks the original `is_retracted` (never
   deletes — the patient already read it) and posts a **new** patient-visible
   notice, because a flag on an old message only reaches someone who re-reads it.
+
+### 12b. What the patient's own screen renders — amendment, 3 Sep 2026
+
+- **Status:** was overclaimed; now PARTIAL
+- **The finding:** scenario 12 grades the *send* gate SURVIVES, and it does. But
+  a screenshot of the live patient portal showed two things the gate never
+  covered, because neither is a send:
+  1. The voice-capture result panel rendered clinician-grade telemetry to the
+     patient — ASR confidence, entity counts, the `mock transcript` badge, and
+     the full speaker-labelled transcript with `<PERSON_1>` placeholders.
+  2. A care instruction reading `Lisinopril to 10 0000000mg daily` sat in the
+     patient's Care Instructions card. Entry `47aaf426`, written **before** the
+     maker-checker gate shipped on 31 Aug, carrying no approval verdict and
+     rendered in the same type, in the same card, as a signed-off instruction.
+- **The mistaken assumption, named:** that `visibility = 'patient_visible'`
+  means approved. It never did. It means a row *may* be shown; it says nothing
+  about whether a human vetted the words. Four such rows were reachable.
+- **Fixed:** `frontend/lib/patient_visibility.ts` keys rendering on
+  `metadata.patient_gate_verdict === 'passed'`, admitting retraction notices
+  (no verdict by construction) and retracted entries (which must stay visible,
+  struck through, or the patient holds a correction with nothing to attach it
+  to). `VoiceCapture.tsx` gates its diagnostics on `isPatient`.
+- **Found in passing, and worse than the leak:** the clinician timeline has
+  rendered `[WITHDRAWN BY CARE TEAM]` since retraction shipped; the patient's
+  own Care Instructions card **never did**. The one person who acted on a wrong
+  dose was the one person not told it had been withdrawn. Now fixed.
+- **What this is NOT:** a security control. The boundary that stops a patient
+  reading unapproved clinical text is `AND visibility = 'internal'` on both
+  care-team INSERT policies. A client-side predicate could never be that, and
+  the module says so in its header so nobody later mistakes it for one.
+- **Untested where it matters most.** These are pinned by structural assertions
+  over source (`test_audit_boundaries.py::TestPatientViewShowsOnlyApprovedContent`)
+  and seven unit tests on the rule itself. **ABSENT: any harness that renders
+  the portal.** No automated test in this repo mounts the patient page, so what
+  is proven is that the gate is in the code — not that a browser honours it.
 
 ### 13. Nurse says penicillin allergy; patient tells AI none
 
@@ -587,7 +628,7 @@ dangerous than a missing one.
 | 5 | Medical terminology & dosage confirmation | **MISSING** | ABSENT: formulary, interaction check, dose-range validation |
 | 6 | Immutable version-bound provenance | **PARTIALLY MET** | `services/provenance.py:178`; scribe write path only |
 | 7 | Extraction under negation & correction | **MET** | `services/safety/risk_rules.py:253`, bidirectional negation |
-| 8 | Real-time collaboration without lost updates | **MET** | Yjs CRDT + OCC fallback, `20260901_care_notes_version.sql:46` |
+| 8 | Real-time collaboration without lost updates | **MET** | Yjs CRDT + OCC fallback, `20260901000001_care_notes_version.sql:46` |
 | 9 | AI regeneration preserving human-confirmed state | **PARTIALLY MET** | `is_accepted` / `is_pinned` persist; ABSENT: explicit merge-on-regenerate |
 | 10 | Contradictory human / patient / AI assertions | **MISSING** | `clinical_conflict.py:373` fires only on same-drug negation; blanket denial undetected |
 | 11 | Audience-adapted readability | **MISSING** | Gated, deliberately not rewritten — see §12.3 of the brief |

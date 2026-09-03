@@ -942,7 +942,7 @@ suite is evidence about the paths you thought to test, and this is the clearest
 example in the build of that not being the same as security.
 
 **Fix:** a `BEFORE UPDATE` trigger pinning `role` and `clinic_id`
-(`supabase/migrations/20260902_pin_profile_identity.sql`), restricted to
+(`supabase/migrations/20260902000001_pin_profile_identity.sql`), restricted to
 `current_user IN ('authenticated','anon')` — the only two roles PostgREST maps a
 JWT to. The first draft tested `current_setting('role') = 'service_role'`, which
 reads `'none'` on the owner connection and would have blocked seeding while

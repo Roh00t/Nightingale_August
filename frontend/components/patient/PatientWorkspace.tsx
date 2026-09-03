@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAppStore } from '@/lib/stores/app-store';
+import { isApprovedForPatient } from '@/lib/patient_visibility';
 import { toast } from 'sonner';
 import type {
   CareNote,
@@ -718,7 +719,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     setCareNote((prev) => prev ? { ...prev, glance_cache: displayCache } : prev);
 
     // Persist the stripped shape. The database strips these keys again on write
-    // (20260901_glance_cache_guard.sql); this is so the app does not depend on
+    // (20260901000002_glance_cache_guard.sql); this is so the app does not depend on
     // that happening silently.
     const { error } = await supabase
       .from('care_notes')
@@ -1208,7 +1209,10 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     const careInstructions = entries.filter(
       (e) => e.visibility === 'patient_visible' &&
              (e.entry_type === 'instruction' ||
-              (e.entry_type === 'patient_message' && e.metadata?.direction === 'outgoing'))
+              (e.entry_type === 'patient_message' && e.metadata?.direction === 'outgoing')) &&
+             // See lib/patient_visibility.ts — a correctness filter over an
+             // already-enforced database boundary, not a security control.
+             isApprovedForPatient(e)
     );
 
     // Helper to get author display name
@@ -1263,7 +1267,31 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                       {new Date(entry.created_at).toLocaleDateString()}
                     </span>
                   </div>
-                  <p className="text-sm leading-relaxed">{entry.content_text}</p>
+                  {/* The clinician timeline has rendered this since retraction
+                      shipped; the patient card did not — which inverted the
+                      whole point. The person who needs to know a dose was
+                      withdrawn is the person who was told to take it. */}
+                  {entry.is_retracted && (
+                    <div className="mb-2 rounded-md border-2 border-red-600 bg-red-50 dark:bg-red-950/40 px-3 py-2">
+                      <span className="inline-block rounded bg-red-600 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+                        [WITHDRAWN BY CARE TEAM]
+                      </span>
+                      <p className="mt-1.5 text-sm font-medium text-red-700 dark:text-red-400">
+                        Do not follow this message. {entry.retraction_reason
+                          ? `Reason: ${entry.retraction_reason}`
+                          : 'Your care team will contact you with a correction.'}
+                      </p>
+                    </div>
+                  )}
+                  <p
+                    className={
+                      entry.is_retracted
+                        ? 'text-sm leading-relaxed line-through decoration-2 decoration-red-600 opacity-70'
+                        : 'text-sm leading-relaxed'
+                    }
+                  >
+                    {entry.content_text}
+                  </p>
                 </div>
               ))}
               {careInstructions.length === 0 && (

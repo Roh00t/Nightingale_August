@@ -9,7 +9,7 @@
 -- read the entire internal record. Apply it even if you skip the rest.
 
 -- ============================================================================
--- 20260902_pin_profile_identity.sql
+-- 20260902000001_pin_profile_identity.sql
 -- ============================================================================
 -- CRITICAL: stop a patient promoting themselves to clinician.
 --
@@ -91,7 +91,7 @@ CREATE TRIGGER trg_pin_profile_identity
 COMMIT;
 
 -- ============================================================================
--- 20260902_telegram_identity.sql
+-- 20260902000003_telegram_identity.sql
 -- ============================================================================
 -- Telegram as a delivery channel and a passwordless identity path.
 --
@@ -144,7 +144,7 @@ COMMENT ON COLUMN profiles.telegram_chat_id IS
 COMMIT;
 
 -- ============================================================================
--- 20260902_rls_hardening.sql
+-- 20260902000002_rls_hardening.sql
 -- ============================================================================
 -- Assessment §1.1, §2.5: tenant defence-in-depth, and interaction_log forgery.
 --

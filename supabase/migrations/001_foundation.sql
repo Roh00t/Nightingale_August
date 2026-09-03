@@ -927,7 +927,14 @@ BEGIN
     (v_entry6, v_care_note_id, 'clinician', p_clinician_id, 'instruction',
      '{"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Dear Alice, your blood pressure is looking better! Please continue taking Lisinopril 10mg every morning. Avoid foods high in potassium (bananas, oranges, potatoes) until your next blood test. Your cardiology appointment should be scheduled soon — please call us if you haven''t heard within 2 weeks. Next visit: March 2026."}]}]}',
      'Dear Alice, your blood pressure is looking better! Please continue taking Lisinopril 10mg every morning. Avoid foods high in potassium (bananas, oranges, potatoes) until your next blood test. Your cardiology appointment should be scheduled soon — please call us if you haven''t heard within 2 weeks. Next visit: March 2026.',
-     'info', 'patient_visible', '{}', '2026-02-01 10:00:00+08'),
+     -- Stamped with an approval record because the patient view renders only
+     -- what a human approved. `human_approved: false` and `seeded: true` are
+     -- deliberate and must stay: this row was never signed off by a clinician,
+     -- and a seed that claimed otherwise would be a fake approval sitting in the
+     -- same field the real gate writes to.
+     'info', 'patient_visible',
+     '{"patient_gate_verdict": "passed", "human_approved": false, "seeded": true}',
+     '2026-02-01 10:00:00+08'),
 
     (v_entry7, v_care_note_id, 'system', NULL, 'system_event',
      '{"test_name": "Complete Metabolic Panel", "results": [{"name": "eGFR", "value": 45, "unit": "mL/min", "reference": ">60", "abnormal": true}, {"name": "Creatinine", "value": 1.4, "unit": "mg/dL", "reference": "0.7-1.3", "abnormal": true}, {"name": "Potassium", "value": 5.1, "unit": "mEq/L", "reference": "3.5-5.0", "abnormal": true}, {"name": "Sodium", "value": 140, "unit": "mEq/L", "reference": "136-145", "abnormal": false}, {"name": "Glucose", "value": 95, "unit": "mg/dL", "reference": "70-100", "abnormal": false}]}',

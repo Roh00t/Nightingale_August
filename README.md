@@ -441,7 +441,7 @@ in step 3.**
 
 `supabase start` applies everything in `supabase/migrations/` automatically, in
 filename order. That includes the privilege-escalation fix
-(`20260902_pin_profile_identity.sql`) and the tenant-isolation policies, so a
+(`20260902000001_pin_profile_identity.sql`) and the tenant-isolation policies, so a
 local instance is not a weakened one.
 
 ### 2. Install dependencies

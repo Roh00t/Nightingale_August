@@ -103,6 +103,10 @@ function pickMimeType(): string {
 }
 
 export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCaptureProps) {
+  // Patients may record — patient_session capture is a designed feature and the
+  // server authorises it. What they must not see is the pipeline's own output.
+  const isPatient = userRole === 'patient';
+
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -358,38 +362,51 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
 
         {result && (
           <div className="space-y-2 border-t border-border pt-2" aria-live="polite">
+            {/* Pipeline telemetry is care-team output, not patient output.
+                Speaker counts, ASR confidence, entity counts and the mock-source
+                badge describe how the system performed — a patient cannot act on
+                any of it, and "ASR confidence 89%" invites them to discount their
+                own care summary on a number about speech recognition.
+
+                `filed to timeline` survives for everyone: it is the one chip that
+                answers a question the patient actually has, which is whether
+                their recording reached the clinic. */}
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="secondary" className="text-[10px]">
-                {result.transcription.speaker_count ?? result.speakers.length} speakers
-              </Badge>
-              <Badge variant="secondary" className="text-[10px]">
-                {result.transcription.segment_count ?? result.segments.length} segments
-              </Badge>
-              {typeof result.transcription.mean_confidence === 'number' && (
-                <Badge variant="secondary" className="text-[10px]">
-                  ASR confidence {Math.round(result.transcription.mean_confidence * 100)}%
-                </Badge>
-              )}
-              {(result.redaction.total_entities ?? 0) > 0 && (
-                <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
-                  {result.redaction.total_entities} identifiers removed
-                </Badge>
+              {!isPatient && (
+                <>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {result.transcription.speaker_count ?? result.speakers.length} speakers
+                  </Badge>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {result.transcription.segment_count ?? result.segments.length} segments
+                  </Badge>
+                  {typeof result.transcription.mean_confidence === 'number' && (
+                    <Badge variant="secondary" className="text-[10px]">
+                      ASR confidence {Math.round(result.transcription.mean_confidence * 100)}%
+                    </Badge>
+                  )}
+                  {(result.redaction.total_entities ?? 0) > 0 && (
+                    <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
+                      {result.redaction.total_entities} identifiers removed
+                    </Badge>
+                  )}
+                  {result.transcription.source === 'mock' && (
+                    <Badge variant="secondary" className="bg-amber-50 text-[10px] text-amber-700">
+                      mock transcript
+                    </Badge>
+                  )}
+                </>
               )}
               {result.filed && (
                 <Badge variant="secondary" className="bg-emerald-50 text-[10px] text-emerald-700">
-                  filed to timeline
-                </Badge>
-              )}
-              {result.transcription.source === 'mock' && (
-                <Badge variant="secondary" className="bg-amber-50 text-[10px] text-amber-700">
-                  mock transcript
+                  {isPatient ? 'sent to your care team' : 'filed to timeline'}
                 </Badge>
               )}
             </div>
 
             <div>
               <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Clinical summary
+                {isPatient ? 'What we recorded' : 'Clinical summary'}
               </p>
               <p className="text-sm leading-relaxed">{result.summary}</p>
             </div>
@@ -405,6 +422,12 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
               </ul>
             )}
 
+            {/* The raw diarized transcript is a working artefact for the care
+                team: it is how a clinician checks what the summary was derived
+                from. A patient reading their own consult back verbatim — with
+                <PERSON_1> placeholders where names were removed — is being shown
+                the machinery, not their care. */}
+            {!isPatient && (
             <details className="text-xs">
               <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                 Speaker-labelled transcript (PHI removed)
@@ -423,6 +446,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
                 ))}
               </div>
             </details>
+            )}
           </div>
         )}
       </CardContent>

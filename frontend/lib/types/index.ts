@@ -360,7 +360,7 @@ export interface RedactResponse {
  * after it had once been fixed.
  *
  * Every write to `care_notes.glance_cache` must go through this. The database
- * also strips these keys on write (`20260901_glance_cache_guard.sql`), so this
+ * also strips these keys on write (`20260901000002_glance_cache_guard.sql`), so this
  * is the readable half of a guarantee that is enforced elsewhere — the app
  * should not depend on the database silently discarding what it sent.
  */

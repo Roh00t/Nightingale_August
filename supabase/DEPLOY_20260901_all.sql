@@ -9,7 +9,7 @@
 -- Every statement is idempotent, so a partial run can be re-run whole.
 
 -- ============================================================================
--- 20260901_multi_clinic_rls.sql
+-- 20260901000003_multi_clinic_rls.sql
 -- ============================================================================
 -- Multi-clinic isolation, defence in depth.
 --
@@ -156,7 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_highlights_clinic ON highlights(clinic_id, care_n
 COMMIT;
 
 -- ============================================================================
--- 20260901_care_notes_version.sql
+-- 20260901000001_care_notes_version.sql
 -- ============================================================================
 -- Optimistic concurrency control on care_notes, and addressable highlight
 -- provenance.
@@ -273,7 +273,7 @@ $$ LANGUAGE sql STABLE;
 COMMIT;
 
 -- ============================================================================
--- 20260901_phone_identity_and_delivery.sql
+-- 20260901000004_phone_identity_and_delivery.sql
 -- ============================================================================
 -- Phone-first patient identity, and delivery tracing for the links we send.
 --
@@ -433,7 +433,7 @@ ALTER TABLE timeline_entries ADD COLUMN IF NOT EXISTS retraction_reason text;
 COMMIT;
 
 -- ============================================================================
--- 20260901_glance_cache_guard.sql
+-- 20260901000002_glance_cache_guard.sql
 -- ============================================================================
 -- Stop the clinical assessment being written back into the patient-readable
 -- column, whatever the client does.
