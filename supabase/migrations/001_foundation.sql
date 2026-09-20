@@ -917,13 +917,6 @@ BEGIN
     -- AI-scribed. author_role 'system', author_id NULL, provenance in metadata.
     -- Patients must never see this entry — enforced by entry_type exclusion in
     -- the "Patients can view their own visible entries" policy above.
-    (v_entry5, v_care_note_id, 'system', NULL, 'ai_doctor_consult_summary',
-     '{"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AI-Generated Consult Summary (Feb 1, 2026): Patient reports new symptom of dyspnea on exertion (climbing 1 flight of stairs). BP today 128/78 (improved). Reviewed labs — eGFR trend concerning. Cardiology referral still pending. Dr. Chen discussed potential need for nephrology consult if eGFR continues to decline. Patient education provided on fluid intake and potassium-rich foods to avoid."}]}]}',
-     'AI-Generated Consult Summary (Feb 1, 2026): Patient reports new symptom of dyspnea on exertion (climbing 1 flight of stairs). BP today 128/78 (improved). Reviewed labs — eGFR trend concerning. Cardiology referral still pending. Dr. Chen discussed potential need for nephrology consult if eGFR continues to decline. Patient education provided on fluid intake and potassium-rich foods to avoid.',
-     'high', 'internal',
-     '{"session_id": "sess-2026-02-01-alice-chen", "ai_model": "nightingale-scribe-v1", "recording_duration_sec": 1245}',
-     '2026-02-01 09:45:00+08'),
-
     (v_entry6, v_care_note_id, 'clinician', p_clinician_id, 'instruction',
      '{"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Dear Alice, your blood pressure is looking better! Please continue taking Lisinopril 10mg every morning. Avoid foods high in potassium (bananas, oranges, potatoes) until your next blood test. Your cardiology appointment should be scheduled soon — please call us if you haven''t heard within 2 weeks. Next visit: March 2026."}]}]}',
      'Dear Alice, your blood pressure is looking better! Please continue taking Lisinopril 10mg every morning. Avoid foods high in potassium (bananas, oranges, potatoes) until your next blood test. Your cardiology appointment should be scheduled soon — please call us if you haven''t heard within 2 weeks. Next visit: March 2026.',
@@ -949,6 +942,29 @@ BEGIN
      'medium', 'internal',
      '{"source": "lab_system", "order_id": "LAB-2025-0618-001", "lab_name": "Quest Diagnostics"}',
      '2025-06-18 09:15:00+08');
+
+  -- AI-scribed entries go in their own statement because they carry a
+  -- provenance_pointer and the rows above do not. The constraint
+  -- timeline_entries_ai_has_provenance requires it: AI-generated text must say
+  -- what produced it, and seed data that could not satisfy its own invariant
+  -- would be the first thing to erode it.
+  --
+  -- The pointer mirrors services/provenance.py::scribe_session_pointer exactly —
+  -- source_type 'scribe_session' plus the session and model — rather than
+  -- inventing a seed-only shape.
+  --
+  -- Placed immediately after its clinic's bulk insert and BEFORE the highlights
+  -- insert, which carries a foreign key to this row.
+  INSERT INTO public.timeline_entries
+    (id, care_note_id, author_role, author_id, entry_type, content, content_text,
+     risk_level, visibility, metadata, provenance_pointer, created_at) VALUES
+    (v_entry5, v_care_note_id, 'system', NULL, 'ai_doctor_consult_summary',
+     '{"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AI-Generated Consult Summary (Feb 1, 2026): Patient reports new symptom of dyspnea on exertion (climbing 1 flight of stairs). BP today 128/78 (improved). Reviewed labs — eGFR trend concerning. Cardiology referral still pending. Dr. Chen discussed potential need for nephrology consult if eGFR continues to decline. Patient education provided on fluid intake and potassium-rich foods to avoid."}]}]}',
+     'AI-Generated Consult Summary (Feb 1, 2026): Patient reports new symptom of dyspnea on exertion (climbing 1 flight of stairs). BP today 128/78 (improved). Reviewed labs — eGFR trend concerning. Cardiology referral still pending. Dr. Chen discussed potential need for nephrology consult if eGFR continues to decline. Patient education provided on fluid intake and potassium-rich foods to avoid.',
+     'high', 'internal',
+     '{"session_id": "sess-2026-02-01-alice-chen", "ai_model": "nightingale-scribe-v1", "recording_duration_sec": 1245}',
+     '{"source_type": "scribe_session", "session_id": "sess-2026-02-01-alice-chen", "ai_model": "nightingale-scribe-v1", "recording_duration_sec": 1245}',
+     '2026-02-01 09:45:00+08');
 
   INSERT INTO public.highlights
     (care_note_id, source_entry_id, content_snippet, risk_reason, risk_level, importance_score, provenance_pointer, created_at) VALUES
@@ -1081,13 +1097,28 @@ BEGIN
      'Lab Results: Diabetes Panel - A1C 8.2% (high), Fasting Glucose 156 mg/dL (high), eGFR 72 mL/min (normal)',
      'high', 'internal',
      '{"source": "lab_system", "order_id": "LAB-2026-0120-002", "lab_name": "LabCorp"}',
-     '2026-01-20 08:00:00+08'),
+     '2026-01-20 08:00:00+08');
 
+
+
+  -- AI-scribed entries go in their own statement because they carry a
+  -- provenance_pointer and the rows above do not. The constraint
+  -- timeline_entries_ai_has_provenance requires it: AI-generated text must say
+  -- what produced it, and seed data that could not satisfy its own invariant
+  -- would be the first thing to erode it.
+  --
+  -- The pointer mirrors services/provenance.py::scribe_session_pointer exactly —
+  -- source_type 'scribe_session' plus the session and model — rather than
+  -- inventing a seed-only shape.
+  INSERT INTO public.timeline_entries
+    (id, care_note_id, author_role, author_id, entry_type, content, content_text,
+     risk_level, visibility, metadata, provenance_pointer, created_at) VALUES
     (v_sunrise_entry3, v_sunrise_care_note_id, 'system', NULL, 'ai_doctor_consult_summary',
      '{"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AI-Generated Consult Summary (Jan 20, 2026): A1C increased from 7.8% to 8.2% over 2 months. Patient reports difficulty with diet adherence during holidays. Blood pressure well controlled. Dr. Miller discussed adding Ozempic for dual benefit of glycemic control and weight loss. Patient agreeable to trial. Referred to dietitian for meal planning support."}]}]}',
      'AI-Generated Consult Summary (Jan 20, 2026): A1C increased from 7.8% to 8.2% over 2 months. Patient reports difficulty with diet adherence during holidays. Blood pressure well controlled. Dr. Miller discussed adding Ozempic for dual benefit of glycemic control and weight loss. Patient agreeable to trial. Referred to dietitian for meal planning support.',
      'high', 'internal',
      '{"session_id": "sess-2026-01-20-robert-miller", "ai_model": "nightingale-scribe-v1", "recording_duration_sec": 892}',
+     '{"source_type": "scribe_session", "session_id": "sess-2026-01-20-robert-miller", "ai_model": "nightingale-scribe-v1", "recording_duration_sec": 892}',
      '2026-01-20 11:30:00+08');
 
   INSERT INTO public.highlights

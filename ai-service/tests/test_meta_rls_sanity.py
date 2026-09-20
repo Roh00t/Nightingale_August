@@ -120,3 +120,80 @@ def test_interaction_log_metadata_allowlist_is_live(clinician_client, user_ids):
         f"text — including PHI — persisted in a column documented as "
         f"metadata-only."
     )
+
+
+def test_machine_entries_carry_no_human_author(clinician_client, sample_care_note_id, user_ids):
+    """Isolates timeline_entries_system_has_no_author.
+
+    Provenance IS supplied, so the other constraint cannot be what rejects this
+    and the test cannot pass for the wrong reason. The first version of this test
+    did exactly that: it omitted provenance, so dropping the authorship
+    constraint left it green — caught by mutation, not by reading it.
+    """
+    from postgrest.exceptions import APIError
+
+    with pytest.raises(APIError):
+        clinician_client.table("timeline_entries").insert({
+            "care_note_id": sample_care_note_id,
+            "entry_type": "ai_doctor_consult_summary",
+            "author_role": "system",
+            # The caller's own id, so RLS is satisfied and the CHECK is what bites.
+            "author_id": user_ids["clinician"],
+            "provenance_pointer": {"source_type": "scribe_session",
+                                   "session_id": "s1", "ai_model": "m"},
+            "content": {},
+            "content_text": "machine text signed by a human",
+            "visibility": "internal",
+        }).execute()
+
+
+def test_ai_text_must_say_what_produced_it(clinician_client, sample_care_note_id, user_ids):
+    """Isolates timeline_entries_ai_has_provenance.
+
+    author_role is 'clinician', so the authorship constraint does not apply and
+    only the missing provenance can reject this.
+    """
+    from postgrest.exceptions import APIError
+
+    with pytest.raises(APIError):
+        clinician_client.table("timeline_entries").insert({
+            "care_note_id": sample_care_note_id,
+            "entry_type": "ai_doctor_consult_summary",
+            "author_role": "clinician",
+            "author_id": user_ids["clinician"],
+            "content": {},
+            "content_text": "AI text with no provenance",
+            "visibility": "internal",
+        }).execute()
+
+
+def test_a_human_note_still_inserts(clinician_client, sample_care_note_id, user_ids):
+    """The control. A constraint that also blocks ordinary charting is an
+    outage, not a control."""
+    clinician_client.table("timeline_entries").insert({
+        "care_note_id": sample_care_note_id,
+        "entry_type": "manual_note",
+        "author_role": "clinician",
+        "author_id": user_ids["clinician"],
+        "content": {},
+        "content_text": "an ordinary note",
+        "visibility": "internal",
+    }).execute()
+
+
+def test_seeded_ai_entries_satisfy_their_own_invariant(service_client):
+    """Seed data that cannot satisfy the constraint is the first thing to erode
+    it — someone drops the constraint rather than fixing the fixture."""
+    rows = (
+        service_client.table("timeline_entries")
+        .select("entry_type, author_id, provenance_pointer")
+        .execute()
+        .data
+    )
+    ai = [r for r in rows if str(r["entry_type"]).startswith("ai_")]
+    assert ai, "the seed should contain AI-scribed entries"
+    for r in ai:
+        assert r["author_id"] is None, "an AI entry must not name a human author"
+        assert r["provenance_pointer"], (
+            f"AI entry {r['entry_type']} has no provenance_pointer"
+        )

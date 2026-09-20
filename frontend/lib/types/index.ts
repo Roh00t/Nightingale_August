@@ -339,6 +339,9 @@ export interface AISummarizeResponse {
   care_plan_score: number;
   care_plan_items: AICarePlanItem[];
   patient_summary: string;
+  /** Set when file_to_timeline was requested; the service wrote the entry. */
+  timeline_entry_id?: string | null;
+  filed?: boolean;
 }
 
 export interface RedactRequest {

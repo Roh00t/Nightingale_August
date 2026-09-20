@@ -1029,6 +1029,9 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             entry_type: e.entry_type || 'note',
             created_at: e.created_at,
           })),
+          // The service writes the timeline entry; the browser cannot write a
+          // correct one. See the note further down.
+          file_to_timeline: true,
         },
         token,
       );
@@ -1044,29 +1047,20 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
         );
         const hasConflict = recentClinicianEntries.length > 0;
 
-        // Insert timeline entry for the AI summary (split insert/select to avoid RLS issues)
-        const { error: entryError } = await supabase
-          .from('timeline_entries')
-          .insert({
-            care_note_id: careNote.id,
-            entry_type: 'ai_doctor_consult_summary',
-            author_role: 'system',
-            author_id: currentUser!.id,
-            content: {
-              type: 'doc',
-              content: [{ type: 'paragraph', content: [{ type: 'text', text: data.patient_summary }] }],
-            },
-            content_text: data.patient_summary,
-            risk_level: entryRiskLevel,
-            visibility: 'internal',
-            metadata: hasConflict ? { conflict_flagged: true } : {},
-          });
-
-        if (entryError) {
-          console.error('Failed to save AI summary entry:', JSON.stringify(entryError, null, 2));
-          toast.error('Failed to save AI summary');
-          return;
-        }
+        // The timeline entry is written by the AI service, not from here.
+        //
+        // This used to insert directly, and it could not produce a correct row:
+        // author_role 'system' with author_id set to the signed-in clinician and
+        // no provenance_pointer — a machine-attributed entry signed by a human,
+        // with nothing tying the text to what generated it. The database
+        // accepted it, because RLS only asks that author_id = auth.uid().
+        //
+        // A user JWT genuinely cannot write the right row. The correct shape is
+        // author_role 'system' with author_id NULL, which no INSERT policy
+        // admits — and should not, since a session that could write it could
+        // forge an entry attributed to the AI scribe. So `file_to_timeline`
+        // makes the service do it behind the service-role key, exactly as the
+        // ambient-capture path already did.
 
         // Fetch the entry we just created
         const { data: newEntry } = await supabase

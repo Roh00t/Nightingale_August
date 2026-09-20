@@ -168,6 +168,14 @@ SEED_RESULT=$(curl -s "$URL/rest/v1/rpc/seed_demo_data" \
 
 echo "Seed result: $SEED_RESULT"
 
+# A PostgREST error is a JSON object with a "code". Without this the script
+# printed "Done!" over a 23503 foreign-key violation and exited 0 — which is how
+# an empty database looks like a successful seed.
+if echo "$SEED_RESULT" | grep -q '"code"'; then
+  echo "SEED FAILED: $SEED_RESULT" >&2
+  exit 1
+fi
+
 echo ""
 echo "Done! Demo accounts (all use password: demo-password-123)"
 echo "  Nightingale Family Clinic:"

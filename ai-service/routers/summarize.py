@@ -19,6 +19,16 @@ from pydantic import BaseModel, Field
 from services.auth import CallerIdentity, require_caller, require_roles
 
 from services.llm import generate_summary
+from uuid import uuid4
+
+from services.llm import MODEL_ID
+from services.provenance import scribe_session_pointer
+from services.supabase_writer import (
+    AccessDenied,
+    SupabaseUnavailable,
+    insert_system_timeline_entry,
+    resolve_care_note,
+)
 from services.redaction import cleanup_redaction_map, de_redact, redact
 
 logger = logging.getLogger(__name__)
@@ -62,6 +72,13 @@ class SummarizeRequest(BaseModel):
         default="",
         description="Optional patient context (diagnosis, age range, etc.)",
     )
+    file_to_timeline: bool = Field(
+        default=False,
+        description=(
+            "File the summary as a system-authored timeline entry. Off by "
+            "default so existing callers are unchanged."
+        ),
+    )
 
 
 class CarePlanItem(BaseModel):
@@ -81,6 +98,8 @@ class SummarizeResponse(BaseModel):
     care_plan_score: int = Field(default=50, ge=0, le=100)
     care_plan_items: list[CarePlanItem] = Field(default_factory=list)
     patient_summary: str = Field(default="")
+    timeline_entry_id: str | None = Field(default=None)
+    filed: bool = Field(default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +196,49 @@ async def summarize(
                     )
                 )
 
+        # --- File server-side, or not at all -------------------------------
+        #
+        # The browser used to write this row itself, and it could not write a
+        # correct one. It sent author_role='system' with author_id = the signed-in
+        # clinician and no provenance_pointer — a machine-attributed entry signed
+        # by a human, with nothing tying the text to what produced it. The
+        # database accepted it, because RLS only requires author_id = auth.uid().
+        #
+        # A user JWT genuinely cannot produce the right row: the correct shape is
+        # author_role='system' with author_id NULL, which no INSERT policy admits
+        # (and should not — a session that could write it could forge an entry
+        # attributed to the AI scribe). So the write moves here, behind the
+        # service-role key, with the tenant check re-applied by hand. Same
+        # conclusion, and the same fix, as the ambient-capture path.
+        entry_id: str | None = None
+        if request.file_to_timeline:
+            try:
+                resolve_care_note(
+                    request.care_note_id, caller_clinic_id=caller.clinic_id
+                )
+            except SupabaseUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except AccessDenied as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            entry = insert_system_timeline_entry(
+                care_note_id=request.care_note_id,
+                entry_type="ai_doctor_consult_summary",
+                content_text=patient_summary,
+                provenance_pointer=scribe_session_pointer(
+                    session_id=f"summary-{uuid4().hex[:12]}",
+                    ai_model=MODEL_ID,
+                ),
+                metadata={
+                    "capture": "summarize_endpoint",
+                    "requested_by": caller.user_id,
+                    "requested_by_role": caller.role,
+                    "source_entry_count": len(request.entries),
+                },
+                risk_level="info",
+            )
+            entry_id = entry["id"]
+
         return SummarizeResponse(
             care_note_id=request.care_note_id,
             highlights=highlights,
@@ -184,6 +246,8 @@ async def summarize(
             care_plan_score=int(llm_result.get("care_plan_score", 50)),
             care_plan_items=care_plan_items,
             patient_summary=patient_summary,
+            timeline_entry_id=entry_id,
+            filed=entry_id is not None,
         )
 
     except HTTPException:

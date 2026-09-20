@@ -274,6 +274,17 @@ cd ai-service && .venv/bin/python -m pytest tests/test_telegram_messaging.py -v
 - npm workspaces hoist to the root `node_modules`. Empty `frontend/node_modules` is correct.
 - `README.md` references `.env.example` and `supabase/seed.sql`. Neither exists.
 - The versions table is `note_versions`. The brief calls it `versions`. See §3.
+- **Do not launch a service from a shell that sourced `.env`.** The existing
+  trap below covers `source .env` mangling the JWK JSON; the subtler version is
+  sourcing it in a *parent* shell and then starting uvicorn from there. The
+  mangled value is exported, inherited by the child, and `load_dotenv()` does
+  not override an existing environment variable — so the service uses the broken
+  one and reports `Authentication is not configured`, while the file on disk is
+  perfectly valid. Launch with `env -u SUPABASE_JWT_JWK ...` or from a clean shell.
+- **`next build` while `next dev` is running corrupts `.next`.** The dev server
+  then serves `Internal Server Error` for every route and the log shows
+  `Cannot find module './vendor-chunks/next.js'`. It reads like a code fault and
+  is not: stop the dev server, `rm -rf frontend/.next`, restart.
 - **Local Supabase signs ES256, not HS256.** `SUPABASE_JWT_JWK` must hold the
   *local* JWKS (`/auth/v1/.well-known/jwks.json`), refetched whenever the stack
   is recreated. A stale hosted JWK 401s on `kid` mismatch; blanking it to force
