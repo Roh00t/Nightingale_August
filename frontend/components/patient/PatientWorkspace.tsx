@@ -112,8 +112,23 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
   useEffect(() => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
+    /**
+     * Guards every setState below against a response that outlived its effect.
+     *
+     * Without it, navigating A -> B lets a slow read for A resolve AFTER B's and
+     * write A's care note, entries and highlights into state — under B's header,
+     * with B's name in the banner. The content is coherent and the SUBJECT is
+     * wrong, which is the same shape as the de-redaction bug: nothing looks
+     * broken, so nothing gets questioned.
+     *
+     * The conflicts effect below has had this since it was written; this one
+     * never did, and it is the effect that loads the record itself.
+     */
+    let cancelled = false;
+
     async function loadData() {
       const { data: { session } } = await supabase.auth.getSession();
+      if (cancelled) return;
       if (session) setToken(session.access_token);
 
       // The care note arrived from the server component; only fall back to a
@@ -126,6 +141,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           .eq('patient_id', patientId)
           .single();
         noteData = (data as CareNote) ?? null;
+        if (cancelled) return;
         if (noteData) setCareNote(noteData);
       }
 
@@ -150,6 +166,11 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
             .order('importance_score', { ascending: false }),
         ]);
 
+        // The awaits above are the widest window in this effect: three reads
+        // against the PREVIOUS patient can still be in flight when the next one
+        // mounts.
+        if (cancelled) return;
+
         if (entryResult.error) {
           console.warn('Failed to load timeline entries:', entryResult.error.message);
         } else if (entryResult.data) {
@@ -166,6 +187,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           .eq('clinic_id', noteData.clinic_id);
 
         if (membersData) {
+          if (cancelled) return;
           setClinicMembers(membersData as Profile[]);
         }
 
@@ -242,12 +264,14 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
           .subscribe();
       }
 
+      if (cancelled) return;
       setLoading(false);
     }
 
     loadData();
 
     return () => {
+      cancelled = true;
       if (channel) {
         supabase.removeChannel(channel);
       }

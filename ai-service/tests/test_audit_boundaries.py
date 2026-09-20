@@ -569,3 +569,60 @@ class TestUITelemetryCannotCarryPHI:
         assert sql.count("security_invoker = true") == 4, (
             "every telemetry view must set security_invoker"
         )
+
+
+class TestPatientWorkspaceCannotRenderTheWrongPatient:
+    """The load effect must not write a stale patient's data into state.
+
+    Navigating A -> B leaves three reads for A in flight. Without a cancellation
+    flag they can resolve after B's and write A's care note, entries and
+    highlights into state — under B's header, with B's name in the banner. The
+    content is internally coherent and the SUBJECT is wrong, which is the same
+    shape as the de-redaction bug: nothing looks broken, so nothing is queried.
+
+    Structural, because this repo has no harness that mounts a React component
+    (vitest.config.ts scopes to lib/, and there is no jsdom). What is pinned is
+    that the guard is present — not that React honours it.
+    """
+
+    def _effect(self) -> str:
+        src = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        start = src.index("async function loadData()")
+        end = src.index("}, [patientId, supabase, initialCareNote]);")
+        return src[start:end]
+
+    def test_the_load_effect_has_a_cancellation_flag(self):
+        src = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        head = src[: src.index("async function loadData()")]
+        assert "let cancelled = false;" in head, (
+            "the load effect declares no cancellation flag"
+        )
+
+    def test_the_cleanup_sets_it(self):
+        src = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        cleanup = src[src.index("    return () => {\n      cancelled = true;") :][:200]
+        assert "cancelled = true;" in cleanup
+        assert "removeChannel" in cleanup, (
+            "the realtime channel must still be torn down alongside the flag"
+        )
+
+    def test_every_direct_setstate_is_guarded(self):
+        """Each state write that follows an await needs the flag before it.
+
+        Counting rather than naming: a new setState added after an await without
+        a guard moves the ratio and fails here.
+        """
+        effect = self._effect()
+        guards = effect.count("if (cancelled) return;")
+        assert guards >= 5, (
+            f"only {guards} cancellation guards in the load effect; each await "
+            f"boundary that precedes a setState needs one"
+        )
+
+    def test_the_conflicts_effect_still_has_its_own(self):
+        """It always did. This asserts the fix did not move the guard rather
+        than add one."""
+        src = (REPO / "frontend/components/patient/PatientWorkspace.tsx").read_text()
+        assert src.count("let cancelled = false;") >= 2, (
+            "both the load effect and the conflicts effect need their own flag"
+        )
