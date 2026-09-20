@@ -23,6 +23,39 @@ def _clean():
     rate_limit.reset()
 
 
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch):
+    """Cut every network call these endpoints would otherwise make.
+
+    Added 21 Sep 2026. These tests were never hermetic. The limiter is
+    middleware, so requests UNDER the limit fall through to the handler — and
+    those handlers call Supabase. The suite passed only because a hosted project
+    was reachable and returned something; when that project was reaped the tests
+    died with a DNS error, and `TESTS.md` had been claiming "no credentials, no
+    Docker, no metered API calls" the whole time.
+
+    Stubbing the handler bodies is correct rather than a dodge: the subject under
+    test is the LIMITER. What matters is that a 429 appears at the right request
+    count, whatever the handler would have replied. Each stub below returns the
+    endpoint's ordinary rejection, so under-limit requests get a real 4xx.
+    """
+    from services import otp
+    from services.supabase_writer import AccessDenied
+
+    def _no_token(token):
+        raise AccessDenied("That link is no longer valid.")
+
+    def _no_profile(phone):
+        return None  # unregistered number -> the generic response, no send
+
+    def _bad_code(*, phone, code):
+        raise otp.OTPError("Invalid or expired code.")
+
+    monkeypatch.setattr("routers.auth.redeem_token", _no_token)
+    monkeypatch.setattr("routers.auth_otp._lookup_profile_by_phone", _no_profile)
+    monkeypatch.setattr("routers.auth_otp.otp.verify", _bad_code)
+
+
 def _client() -> TestClient:
     return TestClient(main.app)
 

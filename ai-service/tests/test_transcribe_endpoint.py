@@ -425,8 +425,22 @@ class TestServerSideFiling:
             state["inserted"] = kwargs
             return {"id": "entry-filed-1", **kwargs}
 
+        def _patient_name(patient_id):
+            state["name_looked_up"] = patient_id
+            return "Demo Patient"
+
         monkeypatch.setattr("routers.transcribe.resolve_care_note", _resolve)
         monkeypatch.setattr("routers.transcribe.insert_system_timeline_entry", _insert)
+        # Added 21 Sep 2026. The filing path gained a THIRD database call on
+        # 3 Sep (the de-redaction allowlist needs the chart's patient name) and
+        # this fixture still stubbed only two. The tests kept passing because a
+        # live hosted project answered the unstubbed call; when that project was
+        # reaped they failed with a DNS error, seventeen days after the change
+        # that caused it.
+        #
+        # The lesson is in the fixture, not the outage: "without touching a
+        # database" was enforced by nothing.
+        monkeypatch.setattr("routers.transcribe.get_patient_display_name", _patient_name)
         return state
 
     def test_no_care_note_id_means_summary_only(self, client, writer):

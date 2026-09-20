@@ -246,7 +246,20 @@ async def transcribe_audio(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Patients may only file captures to their own care note.",
             )
-        patient_name = get_patient_display_name(care_note.get("patient_id") or "")
+        # Non-fatal by design, and the failure direction matters. If the
+        # profiles read is unavailable we proceed with an EMPTY allowlist, which
+        # restores nothing — more conservative, not less. A transient lookup
+        # failure must not kill an ambient capture the clinician cannot re-record,
+        # and must not silently become permission to restore identifiers.
+        try:
+            patient_name = get_patient_display_name(care_note.get("patient_id") or "")
+        except Exception:
+            logger.warning(
+                "Patient name lookup failed; de-redaction allowlist is empty for this "
+                "capture, so no identifiers will be restored.",
+                exc_info=True,
+            )
+            patient_name = None
 
     map_ids: list[str] = []
     try:
