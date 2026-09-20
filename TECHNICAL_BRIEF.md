@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**480 automated tests, runnable offline with no credentials.**
+**487 automated tests, provably offline — see README.**
 
 **Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
 — PHI redacted before egress, access enforced at the database, audit records
@@ -18,7 +18,10 @@ ElevenLabs, Supabase and Railway; defined audit-log retention and review;
 encryption-at-rest key custody; access reviews; and breach notification. None of
 that exists here.
 
-**Live deployment.** Three tiers, three hosts:
+**Deployment.** The hosted demo is dead — the Supabase project was reaped and no
+longer resolves (`NXDOMAIN`, 21 Sep 2026), so the two app tiers below talk to a
+database that is not there. The reference deployment is local:
+`supabase start && ./scripts/seed.sh && npm run dev`. Kept for the record:
 
 | Tier | Host | URL |
 |---|---|---|
@@ -827,7 +830,7 @@ once live transcription is running.
 ## 11. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 480 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 487 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs

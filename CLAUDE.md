@@ -274,6 +274,14 @@ cd ai-service && .venv/bin/python -m pytest tests/test_telegram_messaging.py -v
 - npm workspaces hoist to the root `node_modules`. Empty `frontend/node_modules` is correct.
 - `README.md` references `.env.example` and `supabase/seed.sql`. Neither exists.
 - The versions table is `note_versions`. The brief calls it `versions`. See §3.
+- **Local Supabase signs ES256, not HS256.** `SUPABASE_JWT_JWK` must hold the
+  *local* JWKS (`/auth/v1/.well-known/jwks.json`), refetched whenever the stack
+  is recreated. A stale hosted JWK 401s on `kid` mismatch; blanking it to force
+  the HS256 fallback also 401s, because the token is not HS256. `/ready` reports
+  `jwt_verification: true` through both, since it checks config rather than
+  performing a verify.
+- **The hosted Supabase project was reaped** (NXDOMAIN, 21 Sep 2026). Local is
+  the reference deployment; the README's former live link is retired.
 - **Migration filenames must carry a full 14-digit timestamp.** The Supabase CLI
   keys `schema_migrations` on the leading digit-run, so `20260901_a.sql` and
   `20260901_b.sql` both resolve to version `20260901` and the second insert dies

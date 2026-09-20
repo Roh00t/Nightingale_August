@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**480 automated Python tests, 0 failures · 50 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**487 automated Python tests, 0 failures · 54 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > macOS: the Python suite passes cleanly only with raised SysV shared memory limits — see [System Prerequisites](#system-prerequisites--shared-memory-macos).
 
@@ -25,9 +25,36 @@ and a maker-checker firewall on anything a patient will read.
 
 ---
 
-## Live deployment
+## Deployment status — the hosted demo is gone, and that is the point
 
-### **https://nightingale-august-frontend-6ktv.vercel.app**
+> **The hosted Supabase project no longer resolves** (`NXDOMAIN`, confirmed
+> 21 Sep 2026). Free-tier projects are reaped after inactivity. The Vercel
+> frontend and the Railway AI service may still answer, but they talk to a
+> database that does not exist, so **the hosted demo is not usable** and the
+> former URL is deliberately not linked here.
+>
+> **This is the reference deployment now:**
+>
+> ```bash
+> supabase start && ./scripts/seed.sh && npm run dev
+> ```
+>
+> Nothing about the system needed the cloud. Everything below runs against a
+> local Supabase stack — same migrations, same RLS, same seed — and the test
+> suite is provably offline (see [Tests](#6-tests)). A demo that depends on a
+> free-tier project staying alive is a demo with an expiry date nobody wrote
+> down; this one has none.
+
+<details>
+<summary>The former hosted URLs, for the record</summary>
+
+Frontend `nightingale-august-frontend-6ktv.vercel.app` · AI service
+`nightingaleaugust-3zme-production.up.railway.app` · Supabase project
+`apvofeqnzitnffcaeplz`. The CORS discussion further down still references the
+Vercel origin, because the lesson about anchoring the preview-domain regex is
+worth keeping whether or not that host is live.
+
+</details>
 
 Sign in with any account from the [demo accounts table](#demo-accounts) —
 password `demo-password-123`. Start as `clinician@nightingale.demo`, then open a
@@ -764,6 +791,27 @@ python3 -m venv .venv
 cp .env.example .env                     # AI service + collab server
 ```
 
+> **`SUPABASE_JWT_JWK` must hold the LOCAL key set, and this is the trap.**
+>
+> Local Supabase signs access tokens with **ES256 and a `kid`** — not the legacy
+> HS256 shared secret. `services/auth.py` prefers the JWK whenever
+> `SUPABASE_JWT_JWK` is non-empty and only falls back to `SUPABASE_JWT_SECRET`
+> when it is blank, so **both** of the obvious moves fail:
+>
+> - leave a hosted project's JWK in place → no `kid` matches → every call 401s
+> - blank it, expecting HS256 → the token is ES256, so the secret cannot verify it
+>
+> The symptom is identical either way: `/ready` reports
+> `jwt_verification: true` (it checks configuration, not a real verify) while
+> every authenticated endpoint returns a bare 401. Fetch the local set:
+>
+> ```bash
+> curl -s "$NEXT_PUBLIC_SUPABASE_URL/auth/v1/.well-known/jwks.json"
+> ```
+>
+> and paste the whole JSON document as `SUPABASE_JWT_JWK`. It changes whenever
+> the stack is recreated with `supabase stop --no-backup`.
+
 Paste the values `supabase start` printed:
 
 ```bash
@@ -822,7 +870,7 @@ while breaking every authenticated endpoint.
 ### 6. Tests
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 480 passed, 0 failures
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 487 passed, 0 failures
 #   macOS: requires the sysctl under System Prerequisites, or 83 of these
 #   ERROR at setup on initdb rather than failing
 ```
@@ -830,6 +878,18 @@ cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 480 passed,
 ```bash
 .venv/bin/python -m pytest tests/test_audit_boundaries.py -v
 ```
+
+**The offline claim is now provable, and was not always true.** Eleven tests
+reached the network until 21 Sep 2026 and passed only because a hosted project
+answered; when it was reaped they failed with a DNS error. Prove it rather than
+trust it:
+
+```bash
+SUPABASE_URL=http://127.0.0.1:9 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9 \
+  GROQ_API_KEY=offline-test .venv/bin/python -m pytest tests/ -q   # 487 passed
+```
+
+Port 9 is the discard port. If anything reaches for a backend, it fails there.
 
 The suite needs **no credentials and no running Supabase** — it builds its own
 throwaway PostgreSQL cluster from `supabase/migrations/001_foundation.sql` and
