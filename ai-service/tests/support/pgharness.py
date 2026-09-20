@@ -8,10 +8,18 @@ requires automated tests that actually run, and a grader will not have this
 project's secrets.
 
 So the tests now build their own database: initdb a throwaway cluster, apply
-supabase/migrations/001_foundation.sql verbatim, shim the two Supabase-provided
-pieces the schema depends on (auth.users and auth.uid()), and seed through the
-real 8-argument seed_demo_data. Nothing is mocked — the RLS policies under test
-are the exact ones that ship.
+EVERY migration in supabase/migrations in filename order, shim the two
+Supabase-provided pieces the schema depends on (auth.users and auth.uid()), and
+seed through the real 8-argument seed_demo_data. Nothing is mocked — the RLS
+policies under test are the exact ones that ship.
+
+It applied 001_foundation.sql ALONE until 21 Sep 2026, and that was a hole large
+enough to hide a live defect in. `stamp_interaction_log` was fixed on 3 Sep in
+20260903130000_fix_stamp_trigger_guards.sql; the harness never applied that file,
+so 487 green tests were running against the broken version — one where a
+clinician could still write `user_role: 'admin'` and free-text PHI into
+`interaction_log.target_metadata`. The fix was real and the tests could not see
+it. Any later migration had the same problem by construction.
 """
 
 from __future__ import annotations
@@ -24,7 +32,20 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MIGRATION = REPO_ROOT / "supabase" / "migrations" / "001_foundation.sql"
+MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
+
+
+def _migrations() -> list[Path]:
+    """Every migration, in the order Postgres will see them.
+
+    Filename order is deployment order — which is exactly why the CLI requires a
+    full 14-digit timestamp (see CLAUDE.md §7). Sorting here reproduces what
+    `supabase start` does rather than approximating it.
+    """
+    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    if not files:
+        raise RuntimeError(f"No migrations found in {MIGRATIONS_DIR}")
+    return files
 
 CLINIC_1 = "c0000000-0000-0000-0000-000000000001"
 CLINIC_2 = "c0000000-0000-0000-0000-000000000002"
@@ -83,6 +104,9 @@ GRANT SELECT ON auth.users TO authenticated, service_role;
 
 class PgHarness:
     """Owns the lifecycle of a throwaway cluster."""
+
+    #: [(filename, error)] for migrations this engine could not apply.
+    skipped_migrations: list[tuple[str, str]]
 
     def __init__(self) -> None:
         self.datadir = Path(tempfile.mkdtemp(prefix="ng-pgdata-"))
@@ -157,13 +181,25 @@ class PgHarness:
             conn.execute(f'DROP DATABASE IF EXISTS "{self.dbname}"')
             conn.execute(f'CREATE DATABASE "{self.dbname}"')
 
-        if not MIGRATION.exists():
-            raise RuntimeError(f"Migration not found: {MIGRATION}")
+        migrations = _migrations()
 
         with psycopg.connect(self.dsn, autocommit=True) as conn:
             conn.execute(_AUTH_SHIM)
-            # Applied verbatim: the policies under test are the ones that deploy.
-            conn.execute(MIGRATION.read_text())
+            # Applied verbatim and in full: the policies under test are the ones
+            # that deploy, INCLUDING every fix that landed in a later migration.
+            #
+            # Failures are RECORDED, not swallowed. The harness runs whatever
+            # Postgres is on PATH, which is not necessarily the major version
+            # Supabase deploys, so a migration can use a feature this engine does
+            # not have. Hiding that would put the suite back where it started —
+            # green against a schema that is not the one that ships. The skip
+            # list is asserted by test_meta_rls_sanity, so it cannot grow quietly.
+            self.skipped_migrations = []
+            for path in migrations:
+                try:
+                    conn.execute(path.read_text())
+                except Exception as exc:  # noqa: BLE001
+                    self.skipped_migrations.append((path.name, str(exc).strip()))
             conn.execute(_ROLE_SETUP)
             for uid, email in USERS.values():
                 conn.execute(
@@ -179,11 +215,25 @@ class PgHarness:
 
         with psycopg.connect(self.dsn, autocommit=True) as conn:
             conn.execute(
+                # The last three arrived with migrations the harness did not
+                # apply until 21 Sep 2026, so they were never in this list.
+                # A table that is not reset leaks rows between tests, which is
+                # how a suite starts depending on execution order.
                 "TRUNCATE interaction_log, comments, highlights, note_versions, "
-                "care_note_assessments, timeline_entries, care_notes, profiles "
+                "care_note_assessments, timeline_entries, care_notes, profiles, "
+                "ui_telemetry, patient_access_tokens, message_deliveries "
                 "RESTART IDENTITY CASCADE"
             )
             self._seed(conn)
+
+
+def harness_server_version(dsn: str) -> int:
+    """Major version of the cluster the harness actually built."""
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        row = conn.execute("SHOW server_version_num").fetchone()
+    return int(row[0]) // 10000
 
 
 def postgres_available() -> bool:
