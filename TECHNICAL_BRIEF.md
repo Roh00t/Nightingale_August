@@ -8,7 +8,7 @@ build can render all three without any of them meaning anything. This brief is
 organised around the three questions that matter for each: what is it, how would
 we know if it were wrong, and what happens when it is.
 
-**507 automated tests, provably offline — see README.**
+**511 automated tests, provably offline — see README.**
 
 **Compliance posture.** Synthetic data only. The design is HIPAA/PDPA-*informed*
 — PHI redacted before egress, access enforced at the database, audit records
@@ -830,7 +830,7 @@ once live transcription is running.
 ## 11. Verification
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -v   # 507 passed
+cd ai-service && .venv/bin/python -m pytest tests/ -v   # 511 passed
 cd frontend && npx tsc --noEmit && npm run build
 cd collab-server && npx tsc --noEmit
 node scripts/measure_glance.mjs

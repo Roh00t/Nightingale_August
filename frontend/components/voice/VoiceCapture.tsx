@@ -296,7 +296,6 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
   }
 
   const remaining = MAX_RECORDING_SECONDS - elapsed;
-  const busy = recording || processing;
 
   return (
     <Card>

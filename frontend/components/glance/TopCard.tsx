@@ -13,19 +13,13 @@ const RISK_ORDER: Record<string, number> = {
 import { Button } from '@/components/ui/button';
 import { TrustBadge } from '@/components/ui/trust-badge';
 import { getRiskColor } from '@/lib/utils';
-import type { GlanceCache, Highlight, ChangeSinceLastVisit, CarePlanItem, UserRole } from '@/lib/types';
+import type { GlanceCache, Highlight, CarePlanItem, UserRole } from '@/lib/types';
 import { ActionItems } from './ActionItems';
 import { CriticalFlags } from './CriticalFlags';
 import {
   Eye,
-  TrendingUp,
-  TrendingDown,
-  Clock,
-  Plus,
-  ArrowUpRight,
   Check,
   X,
-  AlertCircle,
   AlertTriangle,
   CheckCircle2,
   XCircle,

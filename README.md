@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**507 automated Python tests, 0 failures · 54 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**511 automated Python tests, 0 failures · 54 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > macOS: the Python suite passes cleanly only with raised SysV shared memory limits — see [System Prerequisites](#system-prerequisites--shared-memory-macos).
 
@@ -886,7 +886,7 @@ while breaking every authenticated endpoint.
 ### 6. Tests
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 507 passed, 0 failures
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 511 passed, 0 failures
 #   macOS: requires the sysctl under System Prerequisites, or 83 of these
 #   ERROR at setup on initdb rather than failing
 ```
@@ -902,7 +902,7 @@ trust it:
 
 ```bash
 SUPABASE_URL=http://127.0.0.1:9 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9 \
-  GROQ_API_KEY=offline-test .venv/bin/python -m pytest tests/ -q   # 507 passed
+  GROQ_API_KEY=offline-test .venv/bin/python -m pytest tests/ -q   # 511 passed
 ```
 
 Port 9 is the discard port. If anything reaches for a backend, it fails there.

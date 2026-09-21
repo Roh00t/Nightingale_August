@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { AppSidebar } from '@/components/layout/AppSidebar';
@@ -15,7 +15,7 @@ export default function DashboardLayout({
 }) {
   const router = useRouter();
   const supabase = createClient();
-  const { currentUser, setCurrentUser, sidebarOpen, activePatientId, setLogoutHandler } = useAppStore();
+  const { currentUser, setCurrentUser, sidebarOpen, setLogoutHandler } = useAppStore();
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -50,16 +50,21 @@ export default function DashboardLayout({
     return () => subscription.unsubscribe();
   }, [supabase, router, setCurrentUser]);
 
-  async function handleLogout() {
+  // Memoised so the effect below can depend on it honestly. Declared inline it
+  // was a new function every render, so listing it would have re-registered the
+  // handler continuously — which is why it was omitted, and why the rule fired.
+  // Suppressing the warning would have left the same stale-closure risk the
+  // other three deps fixes just removed.
+  const handleLogout = useCallback(async () => {
     await supabase.auth.signOut();
     router.push('/login');
-  }
+  }, [supabase, router]);
 
   // Register logout handler for TopBar access
   useEffect(() => {
     setLogoutHandler(handleLogout);
     return () => setLogoutHandler(null);
-  }, [setLogoutHandler]);
+  }, [setLogoutHandler, handleLogout]);
 
   if (loading) {
     return (

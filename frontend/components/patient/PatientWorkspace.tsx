@@ -18,7 +18,6 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { CarePlanCard } from '@/components/patient/CarePlanCard';
 import { AIActionsCard } from '@/components/patient/AIActionsCard';
-import { DegradedAIPanel } from '@/components/patient/DegradedAIPanel';
 import { describeGlanceLoad, hasActiveCriticalAlert, hasCriticalConflict } from '@/lib/clinical_alerts';
 import { ClinicalSummaryColumn } from '@/components/patient/ClinicalSummaryColumn';
 import { useAppStore } from '@/lib/stores/app-store';
@@ -297,11 +296,15 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
    * now one implementation and this calls it.
    *
    * Degrades quietly: if the AI service is unreachable, no conflicts render.
-   * Never blocks the timeline, and never invents a "no conflicts" assurance —
-   * `conflictsChecked` distinguishes "none found" from "not checked".
+   * Never blocks the timeline, and never invents a "no conflicts" assurance.
+   * The distinction between "none found" and "not checked" is carried by
+   * `conflictsDegraded` and the Offline Mode banner it raises — NOT, as an
+   * earlier comment here claimed, by a `conflictsChecked` flag. That flag
+   * existed and nothing ever read it, so the guarantee it described was not
+   * implemented anywhere. Removed 21 Sep 2026 rather than left as a comment
+   * that documents a control which is not there.
    */
   const [conflicts, setConflicts] = useState<ClinicalConflict[]>([]);
-  const [conflictsChecked, setConflictsChecked] = useState(false);
   const conflictCount = conflicts.length;
 
   useEffect(() => {
@@ -329,7 +332,6 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
         );
         if (!cancelled) {
           setConflicts(data.conflicts ?? []);
-          setConflictsChecked(true);
         }
       } catch (err) {
         // The record is unaffected either way — contradictions are derived, not
@@ -806,7 +808,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
     } finally {
       setGeneratingDraft(false);
     }
-  }, [careNote, entries, currentUser]);
+  }, [careNote, entries, currentUser, token]);
 
 
   /**
@@ -1039,13 +1041,6 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       {
 
         // AI highlights are plain strings — use a default risk level
-        const entryRiskLevel = 'info' as const;
-
-        // Check for potential conflicts with recent clinician entries
-        const recentClinicianEntries = entries.filter(
-          (e) => e.author_role === 'clinician' && !e.entry_type.startsWith('ai_')
-        );
-        const hasConflict = recentClinicianEntries.length > 0;
 
         // The timeline entry is written by the AI service, not from here.
         //
@@ -1186,6 +1181,21 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
       // glance cache are read from Supabase and are unaffected by the model
       // being unreachable. The message says which of the two happened so the
       // clinician knows whether retrying is worth the wait.
+      // The banner's trigger surface, widened.
+      //
+      // conflictsDegraded was set ONLY by the contradiction check failing, so a
+      // clinician whose /summarize call timed out saw a toast and a Glance View
+      // that looked exactly as it had before — no "Offline Mode (Rule-Derived)",
+      // nothing to say the AI had not run. A toast is transient; the banner is
+      // what still says "this was not checked" when they look back a minute later.
+      //
+      // shouldDegrade is deliberately narrow — timeout and unavailable only. A
+      // `rejected` is a considered refusal by the patient-message gate and must
+      // never be dressed up as an outage.
+      if (err instanceof AIServiceError && err.shouldDegrade) {
+        setConflictsDegraded(err.kind);
+      }
+
       toast.error(
         err instanceof AIServiceError && err.kind === 'timeout'
           ? `AI summary timed out after ${Math.round(AI_TIMEOUT_MS / 1000)}s. The record below is unchanged.`
@@ -1679,7 +1689,7 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
               kind: conflictsDegraded,
               findings: offlineFindings,
               coverageNote: offlineCoverageNote(entries),
-              onRetry: () => { setConflictsDegraded(null); setConflictsChecked(false); },
+              onRetry: () => { setConflictsDegraded(null); },
             } : null}
             sunshine={{
               glanceCache: careNote.glance_cache,

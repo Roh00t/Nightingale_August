@@ -743,3 +743,56 @@ class TestPhase3UIHardening:
         assert "bg-red-500" in self._code("frontend/components/voice/VoiceCapture.tsx"), (
             "a red recording dot is near-universal and reads as 'recording', not 'danger'"
         )
+
+
+class TestBuildGateIsRealNotAbsent:
+    """`next build` was exiting 0 with zero warnings because ESLint was ABSENT.
+
+    eslint and eslint-config-next were declared in package.json and installed,
+    with no config file — and Next only lints when ESLint is configured. So the
+    clean build meant the check was missing, not passing, and it was also a
+    guardrails C4 violation (a declared dependency neither imported nor removed).
+
+    The first run found four react-hooks/exhaustive-deps warnings. One of them
+    was a real defect: handleSave omitted baseVersion, so the memoised callback
+    could keep the stale null, skip the optimistic-concurrency compare-and-swap,
+    and fall through to the plain write whose silent lost update that block
+    exists to prevent.
+    """
+
+    def test_eslint_is_configured(self):
+        cfg = REPO / "frontend/eslint.config.mjs"
+        assert cfg.exists(), (
+            "no ESLint config — `next build` will skip linting entirely and "
+            "report a clean build over an unchecked codebase"
+        )
+        body = cfg.read_text()
+        assert "next/core-web-vitals" in body, "the Next plugin must be extended"
+
+    def test_the_hooks_rules_are_not_disabled(self):
+        """exhaustive-deps is the rule that found the OCC bug. Turning it off
+        would be the cheapest way to make this suite green and the code wrong."""
+        body = (REPO / "frontend/eslint.config.mjs").read_text()
+        for off in ("'react-hooks/exhaustive-deps': 'off'",
+                    '"react-hooks/exhaustive-deps": "off"',
+                    "'react-hooks/exhaustive-deps': 0"):
+            assert off not in body, "exhaustive-deps must stay enabled"
+
+    def test_build_checks_are_not_suppressed(self):
+        """ignoreBuildErrors / ignoreDuringBuilds turn the build gate into
+        decoration."""
+        cfg = list((REPO / "frontend").glob("next.config.*"))
+        assert cfg, "no next.config found"
+        body = cfg[0].read_text()
+        assert "ignoreBuildErrors" not in body, "TypeScript errors suppressed in build"
+        assert "ignoreDuringBuilds" not in body, "ESLint suppressed in build"
+
+    def test_the_occ_callback_depends_on_base_version(self):
+        """The specific defect, pinned. baseVersion is read inside handleSave to
+        decide whether to use the compare-and-swap RPC at all."""
+        src = (REPO / "frontend/components/editor/CareNoteEditor.tsx").read_text()
+        deps = src[src.index("}, [editor, ydoc, supabase, careNoteId"):][:220]
+        assert "baseVersion" in deps, (
+            "handleSave must depend on baseVersion or it can close over a stale "
+            "null and skip optimistic concurrency entirely"
+        )

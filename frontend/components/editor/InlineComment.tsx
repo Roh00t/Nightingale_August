@@ -22,7 +22,6 @@ interface InlineCommentProps {
 export function InlineComment({
   comments,
   currentUser,
-  entryId,
   onSubmit,
   onResolve,
   loading,

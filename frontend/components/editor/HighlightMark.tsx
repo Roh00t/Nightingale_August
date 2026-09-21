@@ -3,23 +3,19 @@
 import React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import type { Highlight, RiskLevel } from '@/lib/types';
+import type { Highlight } from '@/lib/types';
 import { getConfidenceLabel } from '@/lib/utils';
 
 interface HighlightMarkProps {
   highlight: Highlight;
   children: React.ReactNode;
   onClick: (highlightId: string) => void;
-  onAccept: (highlightId: string) => void;
-  onReject: (highlightId: string) => void;
 }
 
 export function HighlightMark({
   highlight,
   children,
   onClick,
-  onAccept,
-  onReject,
 }: HighlightMarkProps) {
   const confidence = getConfidenceLabel(highlight.importance_score);
   const [expanded, setExpanded] = React.useState(false);

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { diffLines } from 'diff';
+import React, { useEffect, useState, useCallback } from 'react';
+import { diffLines, type Change } from 'diff';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
@@ -11,9 +11,7 @@ import Placeholder from '@tiptap/extension-placeholder';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
 import { getRoleColor } from '@/lib/utils';
 import type { UserRole, Profile } from '@/lib/types';
 import {
@@ -132,9 +130,9 @@ export function CareNoteEditor({
   } | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [diffData, setDiffData] = useState<{
-    additions: any[];
-    deletions: any[];
-    unchanged: any[];
+    additions: Change[];
+    deletions: Change[];
+    unchanged: Change[];
   } | null>(null);
   const [showLivePreview, setShowLivePreview] = useState(false);
   const [liveDiff, setLiveDiff] = useState<{
@@ -182,6 +180,15 @@ export function CareNoteEditor({
   useEffect(() => {
     if ((status !== 'disconnected' && status !== 'unavailable') || fallbackLoaded) return;
 
+    // Guards the writes below against a response that outlived its effect.
+    //
+    // This one matters more than a stray setState warning: the effect ends in
+    // Y.applyUpdate(ydoc, bytes). If careNoteId changes while the read is in
+    // flight, a late response would merge the PREVIOUS note's CRDT state into
+    // the current document — one patient's text inside another's editor, and
+    // Yjs would treat it as legitimate local history.
+    let cancelled = false;
+
     async function loadFallback() {
       const { data, error } = await supabase
         .from('care_notes')
@@ -189,7 +196,7 @@ export function CareNoteEditor({
         .eq('id', careNoteId)
         .single();
 
-      if (error || !data?.yjs_state) return;
+      if (cancelled || error || !data?.yjs_state) return;
 
       // The version this editor's content is based on. Every subsequent save
       // asserts it, so a save built on stale content is refused rather than
@@ -202,14 +209,23 @@ export function CareNoteEditor({
       } catch (err) {
         console.error('[CareNoteEditor] Failed to decode fallback yjs_state:', err);
       }
+      if (cancelled) return;
       setFallbackLoaded(true);
     }
 
     loadFallback();
+    return () => { cancelled = true; };
   }, [status, fallbackLoaded, careNoteId, supabase, ydoc]);
 
   // Initialize editor - MUST come before any useEffects that depend on editor
   const editor = useEditor({
+    // Required, and not cosmetic. Without it TipTap renders on the first pass
+    // and logs "SSR has been detected, please set `immediatelyRender`
+    // explicitly to `false` to avoid hydration mismatches" — a real mismatch
+    // risk, not just noise. This component is already dynamic({ssr:false}) at
+    // the call site, but useEditor does not know that and renders eagerly
+    // anyway, so the guarantee has to be stated here too.
+    immediatelyRender: false,
     editable: !readOnly,
     extensions: [
       StarterKit.configure({
@@ -312,7 +328,10 @@ export function CareNoteEditor({
 
     const handleAwarenessChange = () => {
       const states = provider.awareness!.getStates();
-      states.forEach((state: any) => {
+      // Awareness payloads are whatever peers choose to set, so the shape
+      // is not guaranteed by anything. Narrow it rather than assert `any`.
+      states.forEach((rawState: unknown) => {
+        const state = rawState as { saveEvent?: { userId?: string; userName?: string } };
         if (state.saveEvent && state.saveEvent.userId !== currentUser.id) {
           const { userName } = state.saveEvent;
 
@@ -364,7 +383,7 @@ export function CareNoteEditor({
     // Debounce to avoid excessive computation
     const timeout = setTimeout(computeLiveDiff, 500);
     return () => clearTimeout(timeout);
-  }, [editor?.state.doc, baselineContent, showLivePreview]);
+  }, [editor, editor?.state.doc, baselineContent, showLivePreview]);
 
   // Manual save handler - shows diff dialog
   const handleSave = useCallback(async () => {
@@ -497,7 +516,14 @@ export function CareNoteEditor({
       toast.error('Failed to save care note');
       console.error('Save error:', error);
     }
-  }, [editor, ydoc, supabase, careNoteId, onCreateTimelineEntry, provider, currentUser]);
+  // baseVersion is load-bearing, not incidental. It starts null and is only
+  // set when collab drops and the fallback loads. Omitted from these deps the
+  // memoised callback keeps the stale null, `if (baseVersion !== null)` above
+  // is false, and the optimistic-concurrency compare-and-swap is SKIPPED —
+  // falling through to the plain write whose silent lost update that whole
+  // block exists to prevent. Found by exhaustive-deps the first time ESLint
+  // was ever run here.
+  }, [editor, ydoc, supabase, careNoteId, onCreateTimelineEntry, provider, currentUser, baseVersion]);
 
   const handleSelectiveSave = useCallback(async (selectedIndexes: number[]) => {
     if (!editor || !baselineContent || !diffData) return;
@@ -679,7 +705,6 @@ export function CareNoteEditor({
   };
 
   const statusInfo = statusConfig[status];
-  const StatusIcon = statusInfo.icon;
 
   return (
     <Card className="flex flex-col overflow-hidden">

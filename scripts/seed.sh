@@ -16,14 +16,37 @@ set -euo pipefail
 #   eval "$(npx supabase status -o env | sed 's/^/export /')" \
 #     && NEXT_PUBLIC_SUPABASE_URL="$API_URL" \
 #        SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" ./scripts/seed.sh
-_PRESET_URL="${NEXT_PUBLIC_SUPABASE_URL:-}"
-_PRESET_KEY="${SUPABASE_SERVICE_ROLE_KEY:-}"
-source .env
-[ -n "$_PRESET_URL" ] && NEXT_PUBLIC_SUPABASE_URL="$_PRESET_URL"
-[ -n "$_PRESET_KEY" ] && SUPABASE_SERVICE_ROLE_KEY="$_PRESET_KEY"
+#
+# It also no longer runs `source .env`. Sourcing executes the file as shell, so
+# a JSON value loses its quoting:
+#
+#   in the file : SUPABASE_JWT_JWK={"keys":[{"alg":"ES256",...}]}
+#   after source: SUPABASE_JWT_JWK={keys:[{alg:ES256,...}]}     <- not JSON
+#
+# The mangled value is then EXPORTED, and anything this script starts inherits
+# it — and python-dotenv will not override an existing environment variable, so
+# the service uses the broken one and reports "Authentication is not configured"
+# while the file on disk is perfectly valid. This script needs two values; it
+# reads exactly those, and leaves everything else in the file alone.
+env_get() {
+  local key="$1" line
+  line=$(grep -m1 "^${key}=" .env 2>/dev/null) || return 0
+  line="${line#"${key}="}"
+  case "$line" in
+    \"*\") line="${line%\"}"; line="${line#\"}" ;;
+    \'*\') line="${line%\'}"; line="${line#\'}" ;;
+  esac
+  printf '%s' "$line"
+}
 
-URL="$NEXT_PUBLIC_SUPABASE_URL"
-KEY="$SUPABASE_SERVICE_ROLE_KEY"
+URL="${NEXT_PUBLIC_SUPABASE_URL:-$(env_get NEXT_PUBLIC_SUPABASE_URL)}"
+KEY="${SUPABASE_SERVICE_ROLE_KEY:-$(env_get SUPABASE_SERVICE_ROLE_KEY)}"
+
+if [ -z "$URL" ] || [ -z "$KEY" ]; then
+  echo "ERROR: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set" >&2
+  echo "       (exported, or present in ./.env)" >&2
+  exit 1
+fi
 
 echo "Seeding: $URL"
 
