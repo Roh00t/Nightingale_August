@@ -99,7 +99,7 @@ export function DeferReasonDialog({
           />
           <p
             id="defer-reason-help"
-            className={`text-[11px] ${tooShort && trimmed.length > 0 ? 'text-red-600' : 'text-muted-foreground'}`}
+            className={`text-[11px] ${tooShort && trimmed.length > 0 ? 'text-amber-700 font-medium' : 'text-muted-foreground'}`}
           >
             {trimmed.length}/{MIN_REASON_LENGTH} characters minimum
           </p>

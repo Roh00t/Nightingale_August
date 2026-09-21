@@ -137,7 +137,7 @@ export default function PatientLayout({
           )}
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors"
+            className="flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             title="Log Out"
           >
             <LogOut className="w-3.5 h-3.5" />

@@ -1309,8 +1309,8 @@ export function PatientWorkspace({ patientId, initialCareNote }: PatientWorkspac
                   <p
                     className={
                       entry.is_retracted
-                        ? 'text-sm leading-relaxed line-through decoration-2 decoration-red-600 opacity-70'
-                        : 'text-sm leading-relaxed'
+                        ? 'text-sm leading-relaxed max-w-[68ch] line-through decoration-2 decoration-red-600 opacity-70'
+                        : 'text-sm leading-relaxed max-w-[68ch]'
                     }
                   >
                     {entry.content_text}

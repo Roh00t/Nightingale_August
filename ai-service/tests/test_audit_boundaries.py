@@ -626,3 +626,120 @@ class TestPatientWorkspaceCannotRenderTheWrongPatient:
         assert src.count("let cancelled = false;") >= 2, (
             "both the load effect and the conflicts effect need their own flag"
         )
+
+
+class TestPhase3UIHardening:
+    """Typography, progressive disclosure and the red reservation.
+
+    Structural, because nothing here mounts a React component. What is pinned is
+    that the rule is in the code — not that a browser honours it.
+    """
+
+    @staticmethod
+    def _code(rel: str) -> str:
+        """Source with comments stripped.
+
+        Three separate assertions in this repo have matched their own
+        explanatory prose. Strip first, assert second.
+        """
+        import re as _re
+        src = (REPO / rel).read_text()
+        src = _re.sub(r"/\*.*?\*/", "", src, flags=_re.S)
+        return _re.sub(r"(?m)^\s*//.*$", "", src)
+
+    # --- typography ---------------------------------------------------------
+
+    def test_long_form_prose_is_measure_constrained(self):
+        """68ch on every surface that renders a paragraph of clinical text.
+
+        The editor had it; the timeline did not, and below 2xl the timeline
+        stacks full width — several hundred words of AI consult summary at a
+        ~140 character line.
+        """
+        for rel in (
+            "frontend/components/editor/CareNoteEditor.tsx",
+            "frontend/components/timeline/TimelineEntry.tsx",
+            "frontend/components/patient/PatientWorkspace.tsx",
+        ):
+            assert "max-w-[68ch]" in self._code(rel), f"{rel} has no measure cap"
+
+    def test_the_editor_does_not_disable_the_prose_measure(self):
+        src = self._code("frontend/components/editor/CareNoteEditor.tsx")
+        assert "max-w-none" not in src, (
+            "max-w-none explicitly DISABLES the prose measure — the thing this fixes"
+        )
+
+    # --- progressive disclosure --------------------------------------------
+
+    def test_abnormal_labs_are_never_inside_a_collapsible(self):
+        """Normal results collapse behind a count; abnormal ones do not.
+
+        A critical value behind a disclosure triangle is the exact failure
+        guardrails UI-4 exists to prevent.
+        """
+        src = self._code("frontend/components/timeline/TimelineEntry.tsx")
+        abnormal = src.index("abnormalResults.length > 0")
+        details = src.index("<details", abnormal)
+        normal = src.index("normalResults.length > 0")
+        assert abnormal < normal < details, (
+            "abnormal results must render before, and outside, the collapsible"
+        )
+
+    def test_force_open_renders_no_disclosure_control(self):
+        """Not <details open> — that leaves a triangle the clinician can click."""
+        src = self._code("frontend/components/ui/collapsible-section.tsx")
+        assert "if (forceOpen) {" in src
+        # Bound to the block itself. A fixed character window ran past the
+        # closing brace into the <details> return below and failed on correct
+        # code — the assertion was wrong, not the component.
+        start = src.index("if (forceOpen) {")
+        forced = src[start : src.index("\n  }", start)]
+        assert "<section" in forced, "forceOpen must render a plain section"
+        assert "<details" not in forced, (
+            "forceOpen must not render <details> at all — even <details open> "
+            "leaves a triangle a clinician can click shut"
+        )
+
+    # --- red reservation ----------------------------------------------------
+
+    def test_task_state_is_never_red(self):
+        """An incomplete care-plan item is not a clinical danger. This pattern
+        was fixed three times — CarePlanCard, the admin branch, and finally the
+        patient LIST, which both earlier sweeps missed."""
+        for rel in (
+            "frontend/app/(dashboard)/patients/page.tsx",
+            "frontend/components/patient/CarePlanCard.tsx",
+            "frontend/components/patient/PatientWorkspace.tsx",
+            "frontend/components/glance/TopCard.tsx",
+        ):
+            src = self._code(rel)
+            for pattern in ("'text-red-600'", "'bg-red-500'", "border-red-400 bg-red-50"):
+                assert f"score >= 50 ? 'text-primary' : {pattern}" not in src, rel
+            assert "bg-red-50 text-red-600" not in src, f"{rel}: low score rendered red"
+
+    def test_chrome_is_never_red(self):
+        """Logging out is not a clinical event."""
+        for rel in (
+            "frontend/components/layout/AppSidebar.tsx",
+            "frontend/app/(dashboard)/patients/[id]/layout.tsx",
+        ):
+            src = self._code(rel)
+            assert "hover:bg-red-50" not in src and "hover:text-red-600" not in src, rel
+
+    def test_the_genuine_red_survives(self):
+        """A reservation, not a ban. If these go quiet the sweep went too far."""
+        assert "red-" in self._code("frontend/components/glance/CriticalFlags.tsx")
+        assert "bg-red-600" in self._code("frontend/components/patient/PatientWorkspace.tsx")
+        labs = self._code("frontend/components/timeline/TimelineEntry.tsx")
+        assert "bg-red-50 border border-red-100" in labs, "abnormal labs must stay red"
+
+    def test_the_two_documented_exceptions_are_still_exceptions(self):
+        """Diff deletions and the recording dot keep red by decision, not by
+        oversight. Recorded here so the next sweep does not 'fix' them and lose
+        a convention readers rely on."""
+        assert "text-red-600" in self._code("frontend/components/editor/DiffViewer.tsx"), (
+            "diff deletions are conventionally red; changing that hurts comprehension"
+        )
+        assert "bg-red-500" in self._code("frontend/components/voice/VoiceCapture.tsx"), (
+            "a red recording dot is near-universal and reads as 'recording', not 'danger'"
+        )

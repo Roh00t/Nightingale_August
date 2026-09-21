@@ -226,7 +226,13 @@ export function TimelineEntry({
           )}
 
           {/* Content */}
-          <div className="text-sm leading-relaxed">
+          {/* Measure, not width. The card stays full-bleed — badges, the author
+              row and lab tables all need the space — but the PROSE is capped at
+              68ch. Below 2xl the timeline stacks full width, and an AI consult
+              summary is several hundred words; unconstrained that is a ~140
+              character line, which is where end-of-shift reading actually
+              breaks down. */}
+          <div className="text-sm leading-relaxed [&>p]:max-w-[68ch]">
             {isLabResult ? (
               <LabResultsDisplay content={entry.content as unknown as LabResultContent} metadata={entry.metadata} />
             ) : entry.content_text ? (

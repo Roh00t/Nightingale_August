@@ -341,7 +341,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
               <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" aria-hidden />
               {String(Math.floor(elapsed / 60)).padStart(2, '0')}:
               {String(elapsed % 60).padStart(2, '0')}
-              <span className={remaining <= 15 ? 'text-red-600' : ''}>
+              <span className={remaining <= 15 ? 'text-amber-700 font-medium' : ''}>
                 ({remaining}s left)
               </span>
             </span>
@@ -355,7 +355,7 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
         </p>
 
         {error && (
-          <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
+          <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
             {error}
           </p>
         )}

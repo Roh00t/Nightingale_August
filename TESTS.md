@@ -1,6 +1,6 @@
 # Nightingale — Test Documentation
 
-**499 tests. 0 failures. No credentials, no Docker, no metered API calls —
+**507 tests. 0 failures. No credentials, no Docker, no metered API calls —
 and since 21 Sep 2026 that is *proven*, not asserted: the suite passes with
 every backend pointed at the discard port. Eleven tests were reaching the
 network before that.**

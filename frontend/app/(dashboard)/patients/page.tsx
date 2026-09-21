@@ -414,7 +414,7 @@ export default function PatientsPage() {
                         <span className="text-muted-foreground font-medium">Care Plan</span>
                         <span
                           className={`font-semibold ${
-                            score >= 50 ? 'text-primary' : 'text-red-600'
+                            score >= 50 ? 'text-primary' : 'text-muted-foreground'
                           }`}
                         >
                           {Math.round(score)}%
@@ -423,7 +423,7 @@ export default function PatientsPage() {
                       <div className="w-full bg-secondary rounded-full h-1.5 overflow-hidden">
                         <div
                           className={`h-1.5 rounded-full transition-all duration-700 ${
-                            score >= 50 ? 'bg-primary' : 'bg-red-500'
+                            'bg-primary'
                           }`}
                           style={{ width: `${Math.min(score, 100)}%` }}
                         />
