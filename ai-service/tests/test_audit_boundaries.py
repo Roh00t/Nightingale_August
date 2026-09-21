@@ -531,10 +531,19 @@ class TestUITelemetryCannotCarryPHI:
         assert "action        text NOT NULL CHECK (action IN (" in sql
 
     def test_it_is_a_separate_table_from_interaction_log(self):
-        """importance.py scores unknown action_types at +0.3 — a POSITIVE
-        engagement weight — and reads only the 200 most recent rows. UI events in
-        interaction_log would promote arbitrary highlights and flush genuine
-        accept/reject signal out of the window."""
+        """importance.py reads only the 200 most recent interaction_log rows.
+        UI events written there would flush genuine accept/reject signal out of
+        that window — a busy afternoon of expand/collapse would evict the
+        clinical judgement the loop is supposed to learn from.
+
+        This test used to also cite a +0.3 fallback for unknown action_types,
+        which was a second and worse reason: an unrecognised type scored the
+        same as a real 'view'. Unknown action types are now SKIPPED entirely
+        (services/importance.py, the ACTION_TYPE_WEIGHTS lookup) rather than
+        given any weight - scoring them 0.0 was tried first and was wrong, as
+        0.0 is a real weight that drags the mean down instead of abstaining.
+        So the promotion half of the argument no longer holds. The eviction half does, and on its own it is sufficient
+        — the tables stay separate."""
         src = (REPO / "frontend/lib/telemetry.ts").read_text()
         assert "'ui_telemetry'" in src
         assert "interaction_log" not in src, (
@@ -796,3 +805,121 @@ class TestBuildGateIsRealNotAbsent:
             "handleSave must depend on baseVersion or it can close over a stale "
             "null and skip optimistic concurrency entirely"
         )
+
+
+# ---------------------------------------------------------------------------
+# AI security hardening — properties that hold today and must keep holding
+# ---------------------------------------------------------------------------
+
+
+def _strip_comments_py(src: str) -> str:
+    """Python source with # comments and docstrings removed.
+
+    A naive grep for a forbidden token matches the comment explaining why the
+    token is forbidden. That has produced three false readings in this repo's
+    history, so every "this string appears nowhere" assertion strips first.
+    """
+    src = re.sub(r'"""(?:.|\n)*?"""', "", src)
+    src = re.sub(r"'''(?:.|\n)*?'''", "", src)
+    return re.sub(r"#.*", "", src)
+
+
+def _strip_comments_ts(src: str) -> str:
+    """TS/TSX source with // and /* */ comments removed."""
+    src = re.sub(r"/\*(?:.|\n)*?\*/", "", src)
+    return re.sub(r"//.*", "", src)
+
+
+class TestNoDynamicExecutionInTheAiService:
+    """Chosen instead of a sandbox, and the reasoning is the point.
+
+    A gVisor/microVM layer around this service would defend nothing today: the
+    model returns a JSON string parsed by json.loads under json_object mode,
+    and there is no eval, exec, shell or pickle for injected output to reach.
+    Shipping one would advertise a threat model the system does not have, which
+    is the overclaim CLAUDE.md warns about. What is worth defending against is
+    someone ADDING such a path later — so this test fails on that day instead.
+    """
+
+    FORBIDDEN = re.compile(
+        r"\b(?:eval|exec)\s*\(|\bpickle\b|\bos\.system\b|\bsubprocess\.",
+    )
+
+    def _service_sources(self):
+        root = REPO / "ai-service"
+        for path in root.rglob("*.py"):
+            parts = set(path.parts)
+            if ".venv" in parts or "tests" in parts or "__pycache__" in parts:
+                continue
+            yield path
+
+    def test_no_dynamic_execution_primitive_is_reachable(self):
+        offenders = []
+        for path in self._service_sources():
+            body = _strip_comments_py(path.read_text())
+            if self.FORBIDDEN.search(body):
+                offenders.append(str(path.relative_to(REPO)))
+        assert offenders == [], (
+            "a dynamic-execution primitive appeared in the AI service: "
+            f"{offenders}. Model output is untrusted; if this is deliberate, "
+            "the sandboxing decision recorded in CLAUDE.md must be revisited "
+            "rather than the test relaxed"
+        )
+
+
+class TestModelOutputHasNoHtmlSink:
+    """React escapes by default, so XSS from model output is structurally
+    absent rather than merely unobserved. That property is incidental unless
+    something pins it."""
+
+    def test_dangerously_set_inner_html_appears_nowhere(self):
+        roots = ["frontend/app", "frontend/components", "frontend/lib"]
+        offenders = []
+        for rel in roots:
+            base = REPO / rel
+            if not base.exists():
+                continue
+            for path in list(base.rglob("*.tsx")) + list(base.rglob("*.ts")):
+                if "node_modules" in path.parts:
+                    continue
+                if "dangerouslySetInnerHTML" in _strip_comments_ts(path.read_text()):
+                    offenders.append(str(path.relative_to(REPO)))
+        assert offenders == [], (
+            f"dangerouslySetInnerHTML reached the render path: {offenders}. "
+            "Model output is rendered in these trees"
+        )
+
+
+class TestMachineAuthorshipWritesAreCountable:
+    """insert_system_timeline_entry is the AI service's one state-mutating
+    capability: service-role, RLS-bypassing, with tenant checks re-implemented
+    by hand. A runtime cap on writes-per-request was considered and rejected as
+    vacuous — each of the three call sites already writes exactly one entry. So
+    pin the shape instead, and catch the drift the cap was aimed at."""
+
+    def _call_sites(self):
+        sites = {}
+        for name in ("scribe.py", "transcribe.py", "summarize.py"):
+            path = REPO / "ai-service/routers" / name
+            body = _strip_comments_py(path.read_text())
+            sites[name] = body.count("insert_system_timeline_entry(")
+        return sites
+
+    def test_exactly_three_routers_can_write_machine_authored_entries(self):
+        root = REPO / "ai-service/routers"
+        writers = sorted(
+            p.name
+            for p in root.glob("*.py")
+            if "insert_system_timeline_entry(" in _strip_comments_py(p.read_text())
+        )
+        assert writers == ["scribe.py", "summarize.py", "transcribe.py"], (
+            f"the set of routers writing AI-authored timeline entries changed: "
+            f"{writers}. Each new one re-implements tenant scoping by hand"
+        )
+
+    def test_each_writer_files_one_entry_per_request(self):
+        for name, count in self._call_sites().items():
+            assert count == 1, (
+                f"{name} calls insert_system_timeline_entry {count} times; a "
+                f"retry or loop here fills a chart with machine-authored rows"
+            )

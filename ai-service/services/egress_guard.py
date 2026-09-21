@@ -25,6 +25,22 @@ cannot detect an un-redacted free-text name, and does not pretend to; that is
 Presidio's job, upstream. What it guarantees is narrower and worth stating
 exactly: **no NRIC/FIN or Singapore phone number reaches Groq, whatever the
 call path did.**
+
+Amended 21 Sep 2026. The hypothetical above - "an added `patient_context=`
+argument" - was not hypothetical. routers/summarize.py redacted entry content
+in a loop and then passed request.patient_context straight through unredacted,
+prepended to the FRONT of the user prompt. This guard was the only thing
+standing in front of it, and it caught exactly what it claims to catch: NRIC
+and phone. A name, DOB, address or email in that field went to the provider in
+the clear for as long as the defect existed.
+
+Two things follow, and neither is that the guard failed. First, the narrow
+guarantee held and was worth having - the argument for a second barrier over
+structured identifiers is now evidence rather than theory. Second, the limit
+stated above is real and load-bearing: this module is NOT a name detector, and
+nothing should be built on the assumption that a free-text identifier reaching
+here will be stopped. The redaction path is the control. This is the backstop,
+and a backstop that people mistake for the control is worse than none.
 """
 
 from __future__ import annotations

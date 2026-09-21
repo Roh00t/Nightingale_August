@@ -29,6 +29,11 @@ from services.supabase_writer import (
     insert_system_timeline_entry,
     resolve_care_note,
 )
+from services.prompt_integrity import (
+    clean_fence_residue,
+    fence_residue,
+    scan_request,
+)
 from services.redaction import cleanup_redaction_map, de_redact, redact
 
 logger = logging.getLogger(__name__)
@@ -44,7 +49,11 @@ router = APIRouter(prefix="/api/ai", tags=["summarize"])
 class TimelineEntry(BaseModel):
     """A single care note or timeline entry."""
 
-    content: str = Field(..., description="The text content of the entry")
+    content: str = Field(
+        ...,
+        max_length=20_000,
+        description="The text content of the entry",
+    )
     entry_type: str = Field(
         default="note",
         description="Type of entry: note, vitals, medication, observation, task",
@@ -66,11 +75,19 @@ class SummarizeRequest(BaseModel):
     entries: list[TimelineEntry] = Field(
         ...,
         min_length=1,
+        max_length=200,
         description="Timeline entries to summarize",
     )
     patient_context: str = Field(
         default="",
-        description="Optional patient context (diagnosis, age range, etc.)",
+        max_length=2_000,
+        description=(
+            "Optional patient context (diagnosis, age range). UNTRUSTED INPUT: "
+            "this field is redacted on the same path as entry content and is "
+            "fenced as data before it reaches the model. It previously went to "
+            "the provider unredacted, so the wording here is deliberate - do "
+            "not describe it as a place to put identifying detail."
+        ),
     )
     file_to_timeline: bool = Field(
         default=False,
@@ -149,11 +166,33 @@ async def summarize(
                 "entry_id": entry.entry_id or "",
             })
 
+        # patient_context took a different path to the model than every other
+        # byte in this request: it was passed through unredacted and prepended
+        # to the FRONT of the user prompt, ahead of the instruction. That made
+        # it both a PHI egress path around Presidio and the cleanest injection
+        # vector in the service. It is redacted here so it travels the same
+        # pipeline as entry content, and its map id joins the same cleanup loop.
+        redacted_context = ""
+        if request.patient_context:
+            redacted_context, ctx_map = redact(request.patient_context)
+            redaction_map_ids.append(ctx_map.id)
+
+        # Advisory only. scan_request never blocks and never edits: it reports
+        # that something in the input is SHAPED like an instruction to the
+        # model. An empty verdict is not a statement that nothing is there.
+        integrity = scan_request(redacted_entries, redacted_context)
+        if integrity:
+            logger.warning(
+                "Possible prompt injection in care_note_id=%s fields=%s",
+                request.care_note_id,
+                integrity.get("injection_signal_fields"),
+            )
+
         # Step 2: Generate summary from redacted content
         try:
             llm_result = await generate_summary(
                 redacted_entries,
-                patient_context=request.patient_context,
+                patient_context=redacted_context,
             )
         except RuntimeError as exc:
             logger.error("LLM service error: %s", exc)
@@ -221,6 +260,19 @@ async def summarize(
             except AccessDenied as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+            # The model echoing our fence substitution back is high-signal:
+            # clinical text never contains it, because the only thing that
+            # writes it is our own forgery-neutralisation. Record that it
+            # happened BEFORE cleaning, or a cleaned string is indistinguishable
+            # from one that was never affected.
+            if fence_residue(patient_summary):
+                integrity = {**integrity, "fence_residue_in_output": True}
+                logger.warning(
+                    "Model echoed fenced content for care_note_id=%s",
+                    request.care_note_id,
+                )
+                patient_summary = clean_fence_residue(patient_summary)
+
             entry = insert_system_timeline_entry(
                 care_note_id=request.care_note_id,
                 entry_type="ai_doctor_consult_summary",
@@ -234,6 +286,7 @@ async def summarize(
                     "requested_by": caller.user_id,
                     "requested_by_role": caller.role,
                     "source_entry_count": len(request.entries),
+                    **integrity,
                 },
                 risk_level="info",
             )

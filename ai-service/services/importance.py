@@ -306,7 +306,31 @@ async def _compute_learned_score(
 
         # Proportion of the candidate's vocabulary that this past interaction covers.
         overlap_ratio = len(overlap) / max(len(keywords), 1)
-        weight = ACTION_TYPE_WEIGHTS.get(row.get("action_type", "view"), 0.3)
+
+        # Unknown action types contribute NO signal - they are skipped, not
+        # scored.
+        #
+        # The old fallback was 0.3, numerically identical to "view" in the
+        # table above, so an action_type this module had never heard of counted
+        # as genuine clinician engagement and was indistinguishable from a real
+        # one. Anything able to write to interaction_log gained influence over
+        # clinical ranking without anyone adding it here.
+        #
+        # The obvious fix - default 0.0 - is WRONG, and the tests caught it.
+        # 0.0 is not "no signal" in this function: it is a real weight that
+        # normalises to (0.0 + 0.3) / 1.3 = 0.23 and drags the mean DOWN. That
+        # merely inverts the bug, letting unknown actions suppress findings
+        # instead of promoting them. Both are an unrecognised writer steering
+        # what a clinician sees.
+        #
+        # An unrecognised action is an absence of evidence, so it must reach
+        # neither accumulator. The inner default stays "view": a row whose
+        # action_type field is missing is a real interaction with a lost field,
+        # which is a different thing from an interaction of an unknown type.
+        action_type = row.get("action_type", "view")
+        if action_type not in ACTION_TYPE_WEIGHTS:
+            continue
+        weight = ACTION_TYPE_WEIGHTS[action_type]
 
         weighted_total += overlap_ratio * weight
         overlap_total += overlap_ratio
