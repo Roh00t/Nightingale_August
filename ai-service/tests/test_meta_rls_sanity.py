@@ -197,3 +197,42 @@ def test_seeded_ai_entries_satisfy_their_own_invariant(service_client):
         assert r["provenance_pointer"], (
             f"AI entry {r['entry_type']} has no provenance_pointer"
         )
+
+
+def test_harness_engine_matches_what_deploys(pg):
+    """The test engine must be the major Supabase runs.
+
+    It was PostgreSQL 14 against a deployed 17 until 21 Sep 2026, and three
+    majors of drift is not a detail: 14 cannot parse `security_invoker`, so the
+    four telemetry views — whose entire job is tenant isolation on a read path —
+    were skipped by the harness and verified by no automated test at all.
+
+    A newer engine is not parity either. 18 would parse everything 17 does, but
+    testing on a version the product never runs on is a different mismatch.
+    """
+    from tests.support.pgharness import TARGET_MAJOR, harness_server_version
+
+    version = harness_server_version(pg.dsn)
+    assert version == TARGET_MAJOR, (
+        f"harness is PostgreSQL {version}, Supabase deploys {TARGET_MAJOR}. "
+        f"Install postgresql@{TARGET_MAJOR} or set NIGHTINGALE_PG_BIN."
+    )
+
+
+def test_the_security_invoker_views_exist_and_are_invoker_scoped(pg):
+    """Without security_invoker a view runs as its OWNER and hands every
+    clinic's rows to any reader — the classic way a read-only dashboard becomes
+    a cross-tenant leak. This could not be asserted on PG14 at all."""
+    import psycopg
+
+    with psycopg.connect(pg.dsn) as conn:
+        rows = conn.execute(
+            "SELECT relname, COALESCE(array_to_string(reloptions, ','), '') "
+            "FROM pg_class WHERE relkind='v' AND relnamespace='public'::regnamespace"
+        ).fetchall()
+
+    assert len(rows) == 4, f"expected the 4 telemetry views, found {len(rows)}"
+    for name, opts in rows:
+        assert "security_invoker=true" in opts, (
+            f"view {name} is not security_invoker — it would run as its owner"
+        )

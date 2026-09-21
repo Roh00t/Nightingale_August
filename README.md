@@ -8,7 +8,7 @@ the LLM as fallible: verbatim extraction instead of generation, deterministic
 risk floors the model cannot lower, measured confidence with an abstention rule,
 and a maker-checker firewall on anything a patient will read.
 
-**487 automated Python tests, 0 failures · 54 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
+**499 automated Python tests, 0 failures · 54 Vitest tests · Glance P95 79.7 ms · suite runs offline with no credentials.**
 
 > macOS: the Python suite passes cleanly only with raised SysV shared memory limits — see [System Prerequisites](#system-prerequisites--shared-memory-macos).
 
@@ -678,12 +678,28 @@ with no cloud account and no credentials of ours.
 | **Supabase CLI** | Boots Postgres, Auth (GoTrue), PostgREST and Studio locally. | `supabase --version` |
 | **Node.js 20+** | Next.js 15 App Router. Verified on v24. | `node --version` |
 | **Python 3.11+** | AI service. Verified on 3.14. | `python3 --version` |
-| **PostgreSQL client tools** (`initdb`, `pg_ctl`) | *Tests only.* The suite builds its own throwaway cluster. | `brew install postgresql@14` |
+| **PostgreSQL 17** (`initdb`, `pg_ctl`) | *Tests only.* The suite builds its own throwaway cluster, and it must be **17** — the major Supabase deploys. | `brew install postgresql@17` |
 
 ```bash
 # macOS
-brew install supabase/tap/supabase postgresql@14
+brew install supabase/tap/supabase postgresql@17
 ```
+
+> **The test harness needs PostgreSQL 17 specifically**, not merely "a
+> PostgreSQL". It ran on 14 against a deployed 17 until 21 Sep 2026, and 14
+> cannot parse `security_invoker` — so the four telemetry views, whose whole job
+> is tenant isolation on a read path, were skipped by the harness and covered by
+> no automated test. A *newer* engine is not parity either; 18 parses everything
+> 17 does, but testing on a version the product never runs on is a different
+> mismatch.
+>
+> The harness picks 17 automatically if it is installed (Homebrew, or
+> Postgres.app), and `NIGHTINGALE_PG_BIN` forces a specific one.
+> `test_harness_engine_matches_what_deploys` fails if it ends up on anything else.
+>
+> On macOS it also sets `LC_ALL`, without which PostgreSQL 17+ dies at startup
+> with *"postmaster became multithreaded during startup"* while `pg_ctl` reports
+> only *"could not start server"*.
 
 > Docker must be **running**, not merely installed. `supabase start` fails with a
 > daemon-connection error otherwise, which reads like a CLI problem and is not.
@@ -870,7 +886,7 @@ while breaking every authenticated endpoint.
 ### 6. Tests
 
 ```bash
-cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 487 passed, 0 failures
+cd ai-service && .venv/bin/python -m pytest tests/ -q       # expect 499 passed, 0 failures
 #   macOS: requires the sysctl under System Prerequisites, or 83 of these
 #   ERROR at setup on initdb rather than failing
 ```
@@ -886,7 +902,7 @@ trust it:
 
 ```bash
 SUPABASE_URL=http://127.0.0.1:9 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9 \
-  GROQ_API_KEY=offline-test .venv/bin/python -m pytest tests/ -q   # 487 passed
+  GROQ_API_KEY=offline-test .venv/bin/python -m pytest tests/ -q   # 499 passed
 ```
 
 Port 9 is the discard port. If anything reaches for a backend, it fails there.

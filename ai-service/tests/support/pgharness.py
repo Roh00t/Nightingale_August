@@ -25,6 +25,9 @@ it. Any later migration had the same problem by construction.
 from __future__ import annotations
 
 import atexit
+import glob
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +35,87 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# ---------------------------------------------------------------------------
+# Binary selection
+# ---------------------------------------------------------------------------
+# The harness used to take whatever `initdb` was first on PATH. On this machine
+# that was PostgreSQL 14 while Supabase deploys 17, and three majors of drift is
+# not a detail: 14 cannot parse `security_invoker`, so the telemetry views —
+# whose entire job is tenant isolation on a read path — were skipped by the
+# harness and therefore unverified by any automated test.
+#
+# Selection order: an explicit override, then the newest installed major that is
+# at least MIN_MAJOR, then PATH. Preferring the newest rather than pinning 17
+# exactly means a future Supabase upgrade does not silently fall back to PATH.
+
+# The major Supabase actually deploys. Parity is the goal, so an exact match
+# wins over a newer install: PostgreSQL 18 would parse everything 17 does, but
+# testing on a version the product never runs on is a different mismatch, not a
+# fix for this one.
+TARGET_MAJOR = 17
+MIN_MAJOR = 15  # security_invoker on views
+
+_CANDIDATE_BINDIRS = [
+    "/opt/homebrew/opt/postgresql@{v}/bin",
+    "/usr/local/opt/postgresql@{v}/bin",
+    "/opt/homebrew/Cellar/postgresql@{v}/*/bin",
+    "/Applications/Postgres.app/Contents/Versions/{v}/bin",
+]
+
+
+def _version_of(initdb: str) -> int | None:
+    try:
+        out = subprocess.run([initdb, "--version"], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
+        return None
+    m = re.search(r"(\d+)\.", out)
+    return int(m.group(1)) if m else None
+
+
+def pg_bindir() -> str | None:
+    """Directory holding initdb/pg_ctl/pg_isready, or None if nothing suitable.
+
+    Set NIGHTINGALE_PG_BIN to force a specific installation.
+    """
+    override = os.environ.get("NIGHTINGALE_PG_BIN")
+    if override:
+        return override if Path(override, "initdb").exists() else None
+
+    found: list[tuple[int, str]] = []
+    for major in range(30, MIN_MAJOR - 1, -1):
+        for pattern in _CANDIDATE_BINDIRS:
+            for d in glob.glob(pattern.format(v=major)):
+                if Path(d, "initdb").exists():
+                    v = _version_of(str(Path(d, "initdb")))
+                    if v and v >= MIN_MAJOR:
+                        found.append((v, d))
+    if found:
+        # Exact parity with production first; otherwise the newest that can at
+        # least parse the schema.
+        exact = [d for v, d in found if v == TARGET_MAJOR]
+        if exact:
+            return exact[0]
+        found.sort(reverse=True)
+        return found[0][1]
+
+    # Fall back to PATH, but only if it is new enough. An older one is worse
+    # than none: it produces a green suite against a schema that is not the one
+    # that ships.
+    on_path = shutil.which("initdb")
+    if on_path:
+        v = _version_of(on_path)
+        if v and v >= MIN_MAJOR:
+            return str(Path(on_path).parent)
+    return None
+
+
+def _bin(name: str) -> str:
+    d = pg_bindir()
+    return str(Path(d, name)) if d else name
+
+
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
 
 
@@ -120,9 +204,10 @@ class PgHarness:
     def start(self) -> None:
         if self._started:
             return
-        self._run(["initdb", "-D", str(self.datadir), "-U", "postgres", "--auth=trust"])
+        self._run([_bin("initdb"), "-D", str(self.datadir), "-U", "postgres", "--auth=trust"])
         self._run([
-            "pg_ctl", "-D", str(self.datadir), "-w", "-o",
+            _bin("pg_ctl"), "-D", str(self.datadir), "-w",
+            "-l", str(Path(tempfile.gettempdir(), "ng-pg-server.log")), "-o",
             f"-p {self.port} -k {self.sockdir} -c listen_addresses=''",
             "-l", str(self.datadir / "server.log"), "start",
         ])
@@ -134,7 +219,7 @@ class PgHarness:
         if not self._started:
             return
         subprocess.run(
-            ["pg_ctl", "-D", str(self.datadir), "-m", "immediate", "stop"],
+            [_bin("pg_ctl"), "-D", str(self.datadir), "-m", "immediate", "stop"],
             capture_output=True,
         )
         self._started = False
@@ -158,9 +243,23 @@ class PgHarness:
 
     @staticmethod
     def _run(cmd: list[str]) -> None:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        # LC_ALL is not optional on macOS from PostgreSQL 17 onwards.
+        #
+        # Without it the postmaster dies at startup with
+        #   FATAL: postmaster became multithreaded during startup
+        #   HINT:  Set the LC_ALL environment variable to a valid locale.
+        # because macOS locale resolution can spawn a thread and the postmaster
+        # refuses to fork from a multithreaded process. pg_ctl reports only
+        # "could not start server", so the actual cause is in the server log the
+        # harness was not keeping — which is why this also passes -l now.
+        env = {**os.environ, "LC_ALL": os.environ.get("LC_ALL") or "en_US.UTF-8"}
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if r.returncode != 0:
-            raise RuntimeError(f"{cmd[0]} failed:\n{r.stdout}\n{r.stderr}")
+            detail = ""
+            log = Path(tempfile.gettempdir(), "ng-pg-server.log")
+            if log.exists():
+                detail = "\n--- server log ---\n" + log.read_text()[-2000:]
+            raise RuntimeError(f"{cmd[0]} failed:\n{r.stdout}\n{r.stderr}{detail}")
 
     @property
     def dsn(self) -> str:
@@ -237,5 +336,8 @@ def harness_server_version(dsn: str) -> int:
 
 
 def postgres_available() -> bool:
-    """True when the Postgres binaries the harness needs are on PATH."""
-    return all(shutil.which(b) for b in ("initdb", "pg_ctl", "pg_isready"))
+    """True when a Postgres new enough to build the real schema is available."""
+    d = pg_bindir()
+    if d is None:
+        return False
+    return all(Path(d, b).exists() or shutil.which(b) for b in ("initdb", "pg_ctl", "pg_isready"))

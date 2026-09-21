@@ -274,6 +274,12 @@ cd ai-service && .venv/bin/python -m pytest tests/test_telegram_messaging.py -v
 - npm workspaces hoist to the root `node_modules`. Empty `frontend/node_modules` is correct.
 - `README.md` references `.env.example` and `supabase/seed.sql`. Neither exists.
 - The versions table is `note_versions`. The brief calls it `versions`. See §3.
+- **The pytest harness needs PostgreSQL 17**, matching what Supabase deploys.
+  It silently used whatever `initdb` was on PATH (14 here) until 21 Sep 2026,
+  and 14 cannot parse `security_invoker`, so the telemetry views were skipped
+  and untested. On macOS the harness must also set `LC_ALL`, or PG17+ fails
+  with "postmaster became multithreaded during startup" while pg_ctl reports
+  only "could not start server".
 - **Do not launch a service from a shell that sourced `.env`.** The existing
   trap below covers `source .env` mangling the JWK JSON; the subtler version is
   sourcing it in a *parent* shell and then starting uvicorn from there. The
