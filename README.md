@@ -664,6 +664,118 @@ because the dangerous property is that unsaved text looks saved.
 
 ---
 
+## Phase 4: Production Deployment & CRDT Resilience
+
+Three hardening passes over the local-first path. Each began as a check that was
+supposed to confirm something already worked, and each found that it did not.
+
+### Script hardening and environment safety
+
+**`bash` no longer sources `.env`.** Sourcing executes the file as shell, and
+shell interpolation strips the quoting out of a JSON value:
+
+```
+in the file : SUPABASE_JWT_JWK={"keys":[{"alg":"ES256","kid":"…"}]}
+after source: SUPABASE_JWT_JWK={keys:[{alg:ES256,kid:…}]}          ← not JSON
+```
+
+The damage is not the mangling, it is what happens next. The broken value is
+**exported**, so every process the shell starts inherits it — and `load_dotenv()`
+does not override a variable that already exists in the environment. The service
+therefore prefers the corrupt inherited copy over the perfectly valid file on
+disk, and reports `Authentication is not configured` while `/ready` still
+answers `jwt_verification: true`, because that check reads configuration rather
+than performing a verify. Every authenticated endpoint returns a bare 401 and
+nothing points at the cause.
+
+`scripts/seed.sh` now reads the two keys it needs directly and leaves the rest of
+the file alone. Verified both directions: a child process of a sourcing shell
+inherits mangled JSON; a child of the new loader inherits nothing at all.
+
+The same script's failure behaviour was checked by injection rather than by
+reading it:
+
+| Injected failure | Exit code | Prints "Done!" |
+|---|---|---|
+| Supabase unreachable | `7` | no |
+| Invalid service-role key | `1` | no |
+| Foreign-key violation in the seed RPC | `1` | no |
+| No `.env` present | `1` | no |
+
+That last row matters more than it looks. The script previously printed `Done!`
+and exited `0` over a PostgREST `23503`, which is exactly how an empty database
+comes to look like a successful seed.
+
+### CRDT fallback safety — hydration and cross-patient state
+
+Two fixes to the Hocuspocus path.
+
+**`immediatelyRender: false` on `useEditor`.** Without it TipTap renders on the
+first pass and logs *"SSR has been detected, please set `immediatelyRender`
+explicitly to `false` to avoid hydration mismatches"* on every mount. The
+component is already `dynamic({ ssr: false })` at its call site, but `useEditor`
+does not know that and renders eagerly regardless, so the guarantee has to be
+stated in both places.
+
+**A cancellation guard on the fallback fetch.** When collab drops, the editor
+reads `yjs_state` from Supabase and applies it to the local document. That effect
+had no guard, and it ends in `Y.applyUpdate(ydoc, bytes)`.
+
+Switch patients while that read is in flight and the late response merges the
+**previous** patient's CRDT state into the open editor. Not a rendering glitch —
+Yjs would accept it as legitimate local history, so one patient's clinical text
+becomes part of another patient's document and saves from there as if it had
+always been theirs. The guard is four lines; the failure it prevents is the same
+shape as every other subject-confusion bug found in this codebase, where the
+content is internally coherent and the *patient* is wrong.
+
+### The ESLint catch, and the OCC lock it was hiding
+
+`npm run build` exited `0` with zero warnings. That was not a passing check — it
+was an **absent** one.
+
+`eslint` and `eslint-config-next` were declared in `package.json` and installed
+in `node_modules`, with no configuration file anywhere. Next.js only lints when
+ESLint is configured, so it silently skipped the step, and the build reported
+clean over a codebase that had never been linted. (It was also a `guardrails.md`
+C4 violation: a declared dependency neither imported nor removed.)
+
+Configuring it surfaced 32 problems on the first run. One was a live defect:
+
+> **`handleSave` omitted `baseVersion` from its dependency array.**
+>
+> `baseVersion` starts `null` and is assigned only when collab drops and the
+> Supabase fallback loads. With it missing from the deps, the memoised callback
+> keeps the stale `null` from the render that created it — so
+> `if (baseVersion !== null)` evaluates false, the `save_care_note_yjs`
+> compare-and-swap is **never called**, and the save falls through to the plain
+> write.
+>
+> That plain write is precisely what optimistic concurrency exists to prevent.
+> Two clinicians with the note open during a collab outage both write the whole
+> document, and the second silently erases the first: no error, no version
+> conflict, no trace. Scenario 10 in `CLAUDE.md` grades this control
+> **SURVIVES** — and it was being bypassed by a stale closure that no tool in
+> this repository was looking for.
+
+The remaining 31 were cleared without suppressions: three more
+`exhaustive-deps` warnings (`handleLogout` was memoised rather than the rule
+disabled), four `any` types replaced with `Change[]` and a narrowed awareness
+type, and 24 unused bindings.
+
+One of those was not merely dead. `conflictsChecked` carried comments stating it
+*"keeps the UI from rendering an all-clear it cannot support"* — and nothing
+read it. The distinction between *"none found"* and *"not checked"* was being
+carried by `conflictsDegraded` and the Offline Mode banner all along. The flag
+was removed and the comments corrected, rather than left documenting a control
+that did not exist.
+
+Four tests pin the gate, including one asserting `react-hooks/exhaustive-deps`
+stays enabled — disabling it would be the cheapest way to make the suite green
+and the code wrong.
+
+---
+
 ## Running it locally
 
 **This application is designed to run entirely on your machine.** The hosted
