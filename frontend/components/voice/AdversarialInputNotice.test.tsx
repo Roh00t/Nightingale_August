@@ -20,7 +20,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 
-import { AdversarialInputNotice } from './AdversarialInputNotice';
+import {
+  AdversarialInputNotice,
+  inputSourceFromMetadata,
+} from './AdversarialInputNotice';
 
 afterEach(cleanup);
 
@@ -35,13 +38,13 @@ describe('AdversarialInputNotice', () => {
     // by a colour or an absence."
     render(<AdversarialInputNotice />);
     expect(
-      screen.getByText(/command-like phrasing in source audio/i),
+      screen.getByText(/command-like phrasing in source input/i),
     ).toBeInTheDocument();
   });
 
   it('uses the uppercase-bold treatment the other degraded states use', () => {
     render(<AdversarialInputNotice />);
-    const heading = screen.getByText(/command-like phrasing in source audio/i);
+    const heading = screen.getByText(/command-like phrasing in source input/i);
     expect(heading.className).toContain('uppercase');
     expect(heading.className).toContain('font-bold');
   });
@@ -86,5 +89,80 @@ describe('AdversarialInputNotice', () => {
 
     const second = render(<AdversarialInputNotice />);
     expect(second.container.innerHTML).toBe(rendered);
+  });
+});
+
+describe('AdversarialInputNotice — it names the right medium', () => {
+  it('says "recording" for the audio paths', () => {
+    render(<AdversarialInputNotice source="audio" />);
+    expect(screen.getByRole('alert')).toHaveTextContent(/in this recording/i);
+  });
+
+  it('does not say "recording" for typed input', () => {
+    // /summarize sets the same flag from typed timeline entries and from
+    // patient_context. Telling a clinician to review "this recording" would
+    // send them looking for audio that was never captured.
+    render(<AdversarialInputNotice source="text" />);
+    const alert = screen.getByRole('alert');
+    expect(alert).not.toHaveTextContent(/recording/i);
+    expect(alert).toHaveTextContent(/written in a form/i);
+  });
+
+  it('stays generic when the medium is unknown', () => {
+    // Entries flagged before injection_signal_fields existed. Guessing a
+    // medium would be a confident claim built on nothing.
+    render(<AdversarialInputNotice source="unknown" />);
+    const alert = screen.getByRole('alert');
+    expect(alert).not.toHaveTextContent(/recording/i);
+    expect(alert).toHaveTextContent(/source material/i);
+  });
+
+  it('defaults to audio', () => {
+    render(<AdversarialInputNotice />);
+    expect(screen.getByRole('alert')).toHaveTextContent(/in this recording/i);
+  });
+
+  it('never claims hallucination in any variant', () => {
+    for (const source of ['audio', 'text', 'unknown'] as const) {
+      const { container } = render(<AdversarialInputNotice source={source} />);
+      expect(container.textContent ?? '').not.toMatch(/hallucinat/i);
+      cleanup();
+    }
+  });
+});
+
+describe('inputSourceFromMetadata', () => {
+  it('reads audio from a transcript signal', () => {
+    expect(
+      inputSourceFromMetadata({ injection_signal_fields: ['transcript'] }),
+    ).toBe('audio');
+  });
+
+  it('reads text from a typed-entry signal', () => {
+    expect(
+      inputSourceFromMetadata({ injection_signal_fields: ['entry[2]'] }),
+    ).toBe('text');
+    expect(
+      inputSourceFromMetadata({ injection_signal_fields: ['patient_context'] }),
+    ).toBe('text');
+  });
+
+  it('prefers audio when a capture carries both', () => {
+    expect(
+      inputSourceFromMetadata({
+        injection_signal_fields: ['entry[0]', 'transcript'],
+      }),
+    ).toBe('audio');
+  });
+
+  it('returns unknown rather than guessing', () => {
+    // Every one of these is "we were not told", which is not "it was typed".
+    expect(inputSourceFromMetadata(undefined)).toBe('unknown');
+    expect(inputSourceFromMetadata(null)).toBe('unknown');
+    expect(inputSourceFromMetadata({})).toBe('unknown');
+    expect(inputSourceFromMetadata({ injection_signal_fields: [] })).toBe('unknown');
+    expect(inputSourceFromMetadata({ injection_signal_fields: 'transcript' })).toBe(
+      'unknown',
+    );
   });
 });

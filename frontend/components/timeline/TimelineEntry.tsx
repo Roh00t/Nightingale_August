@@ -11,6 +11,11 @@ import { extractClinicalValues } from '@/lib/clinical_values';
 import type { TimelineEntry as TimelineEntryType, Comment, UserRole, Profile } from '@/lib/types';
 import { ChevronRight, MessageSquare, ExternalLink, Bot, AlertTriangle, FlaskConical , Undo2 } from 'lucide-react';
 
+import {
+  AdversarialInputNotice,
+  inputSourceFromMetadata,
+} from '@/components/voice/AdversarialInputNotice';
+
 interface TimelineEntryProps {
   entry: TimelineEntryType;
   comments: Comment[];
@@ -77,6 +82,18 @@ export function TimelineEntry({
 
   const entryRef = React.useRef<HTMLDivElement>(null);
   const hasConflict: boolean = entry.metadata?.conflict_flagged === true;
+
+  // Persisted by the AI service when the SOURCE INPUT carried command-like
+  // phrasing (services/prompt_integrity.py). Strict === true: a missing field
+  // means the entry predates the detector, which is "not checked", not "nothing
+  // found" — opposite conclusions, and only the second may be implied.
+  //
+  // Clinician-facing only, for the same reason the ASR diagnostics are: it is
+  // not actionable for a patient, and where a patient's own words carried the
+  // phrasing they are the likely author.
+  const injectionSuspected: boolean =
+    userRole !== 'patient' && entry.metadata?.injection_suspected === true;
+  const injectionSource = inputSourceFromMetadata(entry.metadata);
 
   React.useEffect(() => {
     if (isHighlighted && entryRef.current) {
@@ -192,6 +209,36 @@ export function TimelineEntry({
 
               Pinned by test_audit_boundaries.py, which asserts the SPLIT, so a
               future change that unifies the two treatments fails. */}
+          {/* Adversarial-input telemetry, surfaced on the filed entry.
+
+              The flag is written into timeline_entries.metadata by the AI
+              service and has been readable there since it shipped; until now
+              nothing rendered it, so it reached logs and not clinicians. A
+              security signal that renders nowhere is the same as no signal.
+
+              Non-blocking by construction: the note is shown in full, there is
+              nothing to dismiss, and nothing here gates the clinician's next
+              action. UI-1 — stated in words, never by colour alone. */}
+          {injectionSuspected && (
+            <div className="mb-2 space-y-2">
+              <span
+                data-testid="injection-badge"
+                className="inline-flex items-center rounded border-2 border-amber-600 bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
+              >
+                Directive Phrasing In Source
+              </span>
+              <details className="group">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded border border-border bg-secondary/50 px-2 py-1 text-xs text-muted-foreground hover:bg-secondary [&::-webkit-details-marker]:hidden">
+                  <ChevronRight aria-hidden className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+                  <span className="font-medium uppercase tracking-wide">What this means</span>
+                </summary>
+                <div className="mt-1.5">
+                  <AdversarialInputNotice source={injectionSource} />
+                </div>
+              </details>
+            </div>
+          )}
+
           {entry.is_retracted && (
             <details className="group mb-2">
               <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded border border-border bg-secondary/50 px-2 py-1 text-xs text-muted-foreground hover:bg-secondary [&::-webkit-details-marker]:hidden">
