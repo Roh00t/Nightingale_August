@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from services.auth import CallerIdentity, require_roles
 from services.llm import generate_highlights, generate_patient_summary
+from services.prompt_integrity import scan_transcript
 from services.provenance import (
     ENTRY_TYPE_BY_INTERACTION,
     entry_type_for,
@@ -85,6 +86,12 @@ class ScribeResponse(BaseModel):
     highlights: list[ScribeHighlight] = Field(default_factory=list)
     redaction: dict[str, Any] = Field(default_factory=dict)
 
+    # Advisory. True means the SOURCE AUDIO contained phrasing shaped like a
+    # command to the model - not that the note below is wrong, and not that
+    # anything was blocked. The note was still generated, because a consult
+    # cannot be re-recorded. It is surfaced so a human reviews this one harder.
+    injection_suspected: bool = Field(default=False)
+
 
 @router.post(
     "/scribe",
@@ -132,6 +139,15 @@ async def scribe(
 
         redacted_transcript, rmap = redact(request.transcript, extra_names=known_names)
         map_ids.append(rmap.id)
+
+        # Advisory, scanned whole. See services/prompt_integrity.scan_transcript
+        # for why a transcript is not scanned at its opening span.
+        integrity = scan_transcript(redacted_transcript)
+        if integrity:
+            logger.warning(
+                "Possible spoken injection in scribe session for care_note_id=%s",
+                request.care_note_id,
+            )
 
         # Nothing beyond this line has seen the raw transcript.
         try:
@@ -188,6 +204,7 @@ async def scribe(
                 "ingested_by": caller.user_id,
                 "interaction_type": request.interaction_type,
                 "redacted_entity_counts": rmap.entity_counts,
+                **integrity,
             },
             risk_level="info",
         )
@@ -210,6 +227,7 @@ async def scribe(
             summary=summary,
             provenance_pointer=entry["provenance_pointer"],
             highlights=highlights,
+            injection_suspected=bool(integrity),
             redaction={
                 "entity_counts": rmap.entity_counts,
                 "total_entities": rmap.total_entities,

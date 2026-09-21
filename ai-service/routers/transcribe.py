@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from services.auth import CallerIdentity, require_roles
 from services.llm import generate_patient_summary
+from services.prompt_integrity import scan_transcript
 from services.provenance import (
     ENTRY_TYPE_BY_INTERACTION,
     entry_type_for,
@@ -101,6 +102,12 @@ class TranscribeResponse(BaseModel):
 
     transcription: dict[str, Any] = Field(default_factory=dict)
     redaction: dict[str, Any] = Field(default_factory=dict)
+
+    # Advisory. True means the SOURCE AUDIO contained phrasing shaped like a
+    # command to the model - not that the note below is wrong, and not that
+    # anything was blocked. The note was still generated, because a consult
+    # cannot be re-recorded. It is surfaced so a human reviews this one harder.
+    injection_suspected: bool = Field(default=False)
 
     # Set when care_note_id was supplied and the entry was filed server-side.
     # None means "not requested" — the caller asked for a summary only.
@@ -266,6 +273,18 @@ async def transcribe_audio(
         redacted_text, rmap = redact(transcript.text)
         map_ids.append(rmap.id)
 
+        # Advisory, and scanned WHOLE rather than at a prefix: a spoken
+        # injection arrives whenever the speaker chose to say it, and anyone
+        # audible in the room is an author of this text. Never blocks - the
+        # fence contains the payload and the capture still has to produce a
+        # note, because a consult cannot be re-recorded.
+        integrity = scan_transcript(redacted_text)
+        if integrity:
+            logger.warning(
+                "Possible spoken injection in capture for care_note_id=%s",
+                care_note_id or "(none)",
+            )
+
         # Nothing past this line has seen the raw transcript.
         try:
             llm_result = await generate_patient_summary(
@@ -394,6 +413,7 @@ async def transcribe_audio(
                     "captured_by": caller.user_id,
                     "captured_by_role": caller.role,
                     **transcript.to_metadata(),
+                    **integrity,
                 },
                 risk_level="info",
             )
@@ -405,6 +425,7 @@ async def transcribe_audio(
         return TranscribeResponse(
             timeline_entry_id=entry_id,
             filed=entry_id is not None,
+            injection_suspected=bool(integrity),
             interaction_type=interaction_type,
             entry_type=entry_type,
             summary=summary,

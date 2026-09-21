@@ -923,3 +923,83 @@ class TestMachineAuthorshipWritesAreCountable:
                 f"{name} calls insert_system_timeline_entry {count} times; a "
                 f"retry or loop here fills a chart with machine-authored rows"
             )
+
+
+class TestSpokenInjectionNoticeReachesTheClinician:
+    """The flag must not die in the backend logs.
+
+    The notice itself is a real render test —
+    frontend/components/voice/AdversarialInputNotice.test.tsx mounts it in
+    jsdom. What is pinned HERE is the wiring either side of that component,
+    which no render test covers: that the response type carries the flag, that
+    the call site gates it on isPatient, and that neither audio router turns a
+    suspicion into a refusal.
+    """
+
+    def _voice_capture(self) -> str:
+        return _strip_comments_ts(
+            (REPO / "frontend/components/voice/VoiceCapture.tsx").read_text()
+        )
+
+    def test_the_response_type_carries_the_flag(self):
+        src = self._voice_capture()
+        assert "injection_suspected?: boolean" in src, (
+            "TranscribeResult must accept the flag, and optionally - an older "
+            "backend omits it, and undefined must read as 'not checked'"
+        )
+
+    def test_the_notice_is_rendered_from_the_flag(self):
+        src = self._voice_capture()
+        assert "result.injection_suspected" in src, (
+            "the flag reaches the client and nothing renders it"
+        )
+        assert "AdversarialInputNotice" in src
+
+    def test_it_is_clinician_facing_only(self):
+        """Same reasoning as the ASR diagnostics: 'anomaly detected' is not
+        actionable for a patient, and where a patient's own recording carries
+        the phrasing they are the likely author."""
+        src = self._voice_capture()
+        at = src.index("result.injection_suspected")
+        assert "!isPatient" in src[max(0, at - 160):at + 60], (
+            "the notice must be gated on isPatient at the call site"
+        )
+
+    def test_the_notice_component_has_a_render_test(self):
+        """This repo's UI is otherwise pinned structurally. This one control is
+        not, and the assertion exists so that stays true."""
+        test_file = (
+            REPO / "frontend/components/voice/AdversarialInputNotice.test.tsx"
+        )
+        assert test_file.exists(), (
+            "the adversarial-input notice must keep a real render test - a "
+            "security signal that renders nowhere is the same as no signal, "
+            "and a source grep cannot tell those apart"
+        )
+        body = test_file.read_text()
+        assert "@vitest-environment jsdom" in body
+        assert "render(" in body
+
+    def test_the_capture_is_never_blocked_on_the_flag(self):
+        """A consult cannot be re-recorded, so detection must not cost the note."""
+        for name in ("transcribe.py", "scribe.py"):
+            body = _strip_comments_py((REPO / "ai-service/routers" / name).read_text())
+            at = body.index("scan_transcript(")
+            window = body[at:at + 400]
+            assert "raise HTTPException" not in window, (
+                f"{name} raises on a suspected injection - the clinical content "
+                f"of a real consultation must not be lost to a heuristic"
+            )
+
+    def test_both_audio_routers_scan_their_transcript(self):
+        """The audio paths are reachable without any credential: typing needs a
+        login, speaking needs only to be audible."""
+        for name in ("transcribe.py", "scribe.py"):
+            body = _strip_comments_py((REPO / "ai-service/routers" / name).read_text())
+            assert "scan_transcript(" in body, f"{name} never scans its transcript"
+            scan_at = body.index("scan_transcript(")
+            llm_at = body.index("generate_patient_summary(")
+            assert scan_at < llm_at, (
+                f"{name} scans after the model call, which is too late to tag "
+                f"the transaction"
+            )

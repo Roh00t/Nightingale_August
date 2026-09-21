@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+
+import { AdversarialInputNotice } from './AdversarialInputNotice';
 import { Mic, Square, Loader2, AlertTriangle, FileAudio, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { aiUrl } from '@/lib/ai_client';
@@ -64,6 +66,13 @@ interface TranscribeResult {
     total_entities?: number;
     entity_counts?: Record<string, number>;
   };
+  /**
+   * Set when the source audio contained phrasing shaped like a command to the
+   * model. Optional because an older backend does not send it, and `undefined`
+   * must read as "not checked" rather than "nothing found" - those are opposite
+   * conclusions, and the banner below only claims the second.
+   */
+  injection_suspected?: boolean;
 }
 
 interface VoiceCaptureProps {
@@ -406,6 +415,13 @@ export function VoiceCapture({ token, userRole, careNoteId, onSummary }: VoiceCa
                 </Badge>
               )}
             </div>
+
+            {/*
+              Clinician-facing only, on the same reasoning as the diagnostics
+              above. Gating lives here because `isPatient` lives here; the
+              component itself is presentational and makes no such decision.
+            */}
+            {!isPatient && result.injection_suspected && <AdversarialInputNotice />}
 
             <div>
               <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
